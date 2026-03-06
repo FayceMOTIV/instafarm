@@ -1,0 +1,50 @@
+# Secrets
+.env
+.env.local
+.env.production
+
+# Database
+*.db
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual env
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# pytest
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Node (PWA)
+node_modules/
+
+# Claude
+.claude/

@@ -1,0 +1,29 @@
+[Unit]
+Description=InstaFarm Watchdog
+After=network.target redis-server.service instafarm-api.service
+Wants=redis-server.service
+
+[Service]
+Type=exec
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/instafarm
+ExecStart=/home/ubuntu/.venv/bin/python -m backend.bot.run_watchdog
+Restart=always
+RestartSec=10
+EnvironmentFile=/home/ubuntu/instafarm/.env
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/instafarm
+PrivateTmp=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=instafarm-watchdog
+
+[Install]
+WantedBy=multi-user.target

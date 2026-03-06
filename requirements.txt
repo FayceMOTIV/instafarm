@@ -1,0 +1,53 @@
+# Web framework
+fastapi==0.115.0
+uvicorn[standard]==0.30.0
+python-multipart==0.0.9
+
+# Database
+sqlalchemy>=2.0.35
+aiosqlite==0.20.0
+
+# Redis
+redis[asyncio]==5.1.0
+
+# Instagram
+instagrapi>=2.1.2
+playwright==1.47.0
+
+# IA
+groq==0.11.0
+scikit-learn>=1.5.2
+numpy>=1.26.4
+
+# Scraping
+apify-client==1.8.1
+
+# SMS
+requests==2.32.3
+
+# Scheduling
+apscheduler==3.10.4
+
+# Crypto/Securite
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.3.0
+pyotp==2.9.0
+
+# Web Push Notifications
+pywebpush==2.0.0
+
+# Backup OCI
+oci==2.130.0
+
+# Utils
+python-dotenv==1.0.1
+pydantic>=2.7.1
+pydantic-settings>=2.5.2
+httpx==0.27.2
+aiohttp==3.10.5
+tenacity==9.0.0
+loguru==0.7.2
+
+# Tests
+pytest==8.3.3
+pytest-asyncio==0.24.0
