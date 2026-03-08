@@ -306,78 +306,70 @@ async def _solve_captcha_capsolver(page) -> bool:
 # Account Creation
 # ──────────────────────────────────────────────────────────
 
+# Mapping pays GrizzlySMS : (grizzly_country_code, phone_prefix, tiktok_country_name)
+COUNTRY_CONFIGS = [
+    {"name": "UK", "grizzly": "16", "prefix": "+44", "tiktok_label": "United Kingdom"},
+    {"name": "Indonesia", "grizzly": "6", "prefix": "+62", "tiktok_label": "Indonesia"},
+    {"name": "France", "grizzly": "78", "prefix": "+33", "tiktok_label": "France"},
+]
+
+
 async def create_tiktok_account(
     niche: str,
     proxy: str | None = None,
     save_cookies_path: str | None = None,
     headless: bool = True,
 ) -> dict:
-    """Cree un compte TikTok — GrizzlySMS 'ds' x2 puis 5sim.net fallback."""
+    """Cree un compte TikTok — GrizzlySMS 'ds' UK puis Indonesie."""
 
-    # Phase 1 : GrizzlySMS service "ds" (2 tentatives)
-    if SMS_API_KEY:
-        sms_client = GrizzlySMSClient(SMS_API_KEY, SMS_API_URL)
-        balance = await sms_client.get_balance()
-        print(f"[ACCOUNT] GrizzlySMS balance: {balance} RUB")
+    if not SMS_API_KEY:
+        return {"success": False, "error": "SMS_ACTIVATE_KEY not configured"}
 
-        if balance >= 5:
-            for attempt in range(1, 3):
-                print(f"\n[ACCOUNT] === GrizzlySMS 'ds' — Tentative {attempt}/2 pour {niche} ===")
-                result = await _attempt_tiktok_signup(
-                    niche=niche,
-                    sms_client=sms_client,
-                    sms_service="ds",
-                    sms_country="78",
-                    proxy=proxy,
-                    save_cookies_path=save_cookies_path,
-                    headless=headless,
-                )
-                if result["success"]:
-                    return result
-                print(f"[ACCOUNT] GrizzlySMS tentative {attempt} echouee: {result.get('error')}")
-                if attempt < 2:
-                    wait = 10 + random.randint(0, 10)
-                    print(f"[ACCOUNT] Attente {wait}s avant retry...")
-                    await asyncio.sleep(wait)
+    sms_client = GrizzlySMSClient(SMS_API_KEY, SMS_API_URL)
+    balance = await sms_client.get_balance()
+    print(f"[ACCOUNT] GrizzlySMS balance: {balance} RUB")
 
-            print("[ACCOUNT] GrizzlySMS 'ds' echoue 2x — switch vers 5sim.net")
-        else:
-            print(f"[ACCOUNT] GrizzlySMS balance trop faible ({balance}), skip vers 5sim")
-    else:
-        print("[ACCOUNT] SMS_ACTIVATE_KEY absent, skip GrizzlySMS")
+    if balance < 5:
+        return {"success": False, "error": f"GrizzlySMS balance trop faible: {balance} RUB"}
 
-    # Phase 2 : 5sim.net fallback (1 tentative)
-    if not FIVESIM_API_KEY:
-        return {"success": False, "error": "GrizzlySMS echoue et FIVESIM_API_KEY non configure"}
+    last_error = ""
+    # Essayer UK d'abord, puis Indonesie
+    for country_cfg in COUNTRY_CONFIGS[:2]:  # UK, Indonesia
+        cname = country_cfg["name"]
+        print(f"\n[ACCOUNT] === GrizzlySMS 'ds' {cname} — pour {niche} ===")
 
-    fivesim_client = FiveSimClient(FIVESIM_API_KEY)
-    balance_5sim = await fivesim_client.get_balance()
-    print(f"[ACCOUNT] 5sim.net balance: {balance_5sim} RUB")
+        result = await _attempt_tiktok_signup(
+            niche=niche,
+            sms_client=sms_client,
+            sms_service="ds",
+            sms_country=country_cfg["grizzly"],
+            phone_prefix=country_cfg["prefix"],
+            tiktok_country_label=country_cfg["tiktok_label"],
+            proxy=proxy,
+            save_cookies_path=save_cookies_path,
+            headless=headless,
+        )
 
-    if balance_5sim < 10:
-        return {"success": False, "error": f"5sim balance trop faible: {balance_5sim}"}
+        if result["success"]:
+            return result
 
-    print(f"\n[ACCOUNT] === 5sim.net — Tentative pour {niche} ===")
-    result = await _attempt_tiktok_signup(
-        niche=niche,
-        sms_client=fivesim_client,
-        sms_service="tiktok",
-        sms_country="france",
-        proxy=proxy,
-        save_cookies_path=save_cookies_path,
-        headless=headless,
-    )
-    if result["success"]:
-        return result
+        last_error = result.get("error", "unknown")
+        print(f"[ACCOUNT] {cname} echoue: {last_error}")
 
-    return {"success": False, "error": f"Echec GrizzlySMS 'ds' x2 + 5sim.net. Dernier: {result.get('error')}"}
+        wait = 10 + random.randint(0, 10)
+        print(f"[ACCOUNT] Attente {wait}s avant pays suivant...")
+        await asyncio.sleep(wait)
+
+    return {"success": False, "error": f"Echec UK + Indonesia. Dernier: {last_error}"}
 
 
 async def _attempt_tiktok_signup(
     niche: str,
     sms_client,
     sms_service: str = "ds",
-    sms_country: str = "78",
+    sms_country: str = "16",
+    phone_prefix: str = "+44",
+    tiktok_country_label: str = "United Kingdom",
     proxy: str | None = None,
     save_cookies_path: str | None = None,
     headless: bool = True,
@@ -569,7 +561,19 @@ async def _attempt_tiktok_signup(
             # Nettoyer overlays avant de cliquer
             await _remove_overlays(page)
 
-            phone_local = phone.replace("+33", "0")
+            # Selectionner le bon pays dans le dropdown TikTok
+            await _select_tiktok_country(page, tiktok_country_label, phone_prefix)
+
+            # Convertir en numero local (sans prefix international)
+            phone_local = phone
+            if phone.startswith(phone_prefix):
+                phone_local = phone[len(phone_prefix):]
+                # UK: +447xxx -> 7xxx (pas de 0 devant pour TikTok)
+                # ID: +628xxx -> 8xxx
+                # FR: +337xxx -> 7xxx (TikTok attend sans le 0)
+            phone_local = phone_local.lstrip("0")
+            print(f"  Numero local: {phone_local} (prefix {phone_prefix})")
+
             await phone_input.click(force=True)
             await asyncio.sleep(0.5)
             await _type_like_human(phone_input, phone_local)
@@ -682,6 +686,90 @@ async def _attempt_tiktok_signup(
             await browser.close()
             await sms_client.cancel_number(order_id)
             return {"success": False, "error": str(e)}
+
+
+async def _select_tiktok_country(page, country_label: str, phone_prefix: str):
+    """Selectionne le pays dans le dropdown code pays TikTok."""
+    try:
+        # Chercher le selecteur de code pays (dropdown a cote du champ telephone)
+        country_selector = None
+        for sel in [
+            '[data-e2e="area-code-selector"]',
+            '[class*="phone-code"]',
+            '[class*="area-code"]',
+            '[class*="country-code"]',
+            'div[class*="prefix"]',
+            # Le selecteur est souvent un div cliquable avec le code pays
+            f'div:has-text("{phone_prefix}")',
+        ]:
+            try:
+                el = page.locator(sel).first
+                if await el.is_visible(timeout=1500):
+                    country_selector = el
+                    print(f"  Country selector found: {sel}")
+                    break
+            except Exception:
+                continue
+
+        if not country_selector:
+            # Essayer de trouver via select element
+            select_el = page.locator('select').first
+            try:
+                if await select_el.is_visible(timeout=1000):
+                    # C'est un <select>, utiliser select_option
+                    await select_el.select_option(label=country_label)
+                    print(f"  Country selected via <select>: {country_label}")
+                    await asyncio.sleep(0.5)
+                    return
+            except Exception:
+                pass
+            print(f"  Country selector non trouve, le pays par defaut sera utilise")
+            return
+
+        # Cliquer le dropdown
+        await country_selector.click(force=True)
+        await asyncio.sleep(1)
+
+        # Chercher un champ de recherche dans le dropdown
+        search_input = None
+        for sel in ['input[type="search"]', 'input[placeholder*="search" i]', 'input[placeholder*="Search" i]']:
+            try:
+                inp = page.locator(sel).first
+                if await inp.is_visible(timeout=1500):
+                    search_input = inp
+                    break
+            except Exception:
+                continue
+
+        if search_input:
+            await search_input.fill(country_label)
+            await asyncio.sleep(0.5)
+
+        # Cliquer sur le pays dans la liste
+        country_clicked = False
+        for sel in [
+            f'text="{country_label}"',
+            f'li:has-text("{country_label}")',
+            f'div:has-text("{country_label}")',
+            f'span:has-text("{phone_prefix}")',
+        ]:
+            try:
+                option = page.locator(sel).first
+                if await option.is_visible(timeout=2000):
+                    await option.click()
+                    country_clicked = True
+                    print(f"  Country selected: {country_label} ({phone_prefix})")
+                    break
+            except Exception:
+                continue
+
+        if not country_clicked:
+            print(f"  WARN: Could not select {country_label}, using default")
+
+        await asyncio.sleep(0.5)
+
+    except Exception as e:
+        print(f"  Country selection error: {e}, continuing with default")
 
 
 async def _remove_overlays(page):
