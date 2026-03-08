@@ -237,8 +237,9 @@ async def create_tiktok_account(
     proxy: str | None = None,
     save_cookies_path: str | None = None,
     headless: bool = True,
+    max_retries: int = 3,
 ) -> dict:
-    """Cree un compte TikTok complet. Retourne {success, username, phone, cookies_path, error}."""
+    """Cree un compte TikTok avec retry automatique (nouveau numero a chaque essai)."""
     if not SMS_API_KEY:
         return {"success": False, "error": "SMS_ACTIVATE_KEY not configured"}
 
@@ -250,6 +251,40 @@ async def create_tiktok_account(
 
     print(f"[ACCOUNT] SMS balance: {balance} RUB")
 
+    last_error = ""
+    for attempt in range(1, max_retries + 1):
+        print(f"\n[ACCOUNT] === Tentative {attempt}/{max_retries} pour {niche} ===")
+
+        result = await _attempt_tiktok_signup(
+            niche=niche,
+            sms_client=sms_client,
+            proxy=proxy,
+            save_cookies_path=save_cookies_path,
+            headless=headless,
+        )
+
+        if result["success"]:
+            return result
+
+        last_error = result.get("error", "unknown")
+        print(f"[ACCOUNT] Tentative {attempt} echouee: {last_error}")
+
+        if attempt < max_retries:
+            wait = 10 + random.randint(0, 10)
+            print(f"[ACCOUNT] Attente {wait}s avant retry...")
+            await asyncio.sleep(wait)
+
+    return {"success": False, "error": f"Echec apres {max_retries} tentatives. Dernier: {last_error}"}
+
+
+async def _attempt_tiktok_signup(
+    niche: str,
+    sms_client: GrizzlySMSClient,
+    proxy: str | None = None,
+    save_cookies_path: str | None = None,
+    headless: bool = True,
+) -> dict:
+    """Une tentative de creation de compte TikTok avec un nouveau numero."""
     username_base = random.choice(NICHE_USERNAMES.get(niche, ["ProFrance"]))
     username = f"{username_base}{random.randint(10, 99)}"
     password = _generate_password()
@@ -469,11 +504,12 @@ async def create_tiktok_account(
             await asyncio.sleep(2)
             await page.screenshot(path="/tmp/tiktok_step6_sendcode.png")
 
-            # 7. Attendre OTP via GrizzlySMS
-            otp_code = await sms_client.wait_for_sms(order_id, max_wait=120)
+            # 7. Attendre OTP via GrizzlySMS (180s)
+            otp_code = await sms_client.wait_for_sms(order_id, max_wait=180)
             if not otp_code:
                 await browser.close()
-                return {"success": False, "error": "Timeout waiting for SMS OTP"}
+                await sms_client.cancel_number(order_id)
+                return {"success": False, "error": "Timeout SMS OTP (180s)"}
 
             print(f"  OTP recu: {otp_code}")
 
