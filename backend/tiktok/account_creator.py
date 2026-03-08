@@ -1,10 +1,10 @@
 """Creation automatisee de comptes TikTok.
 
-Stack : 5sim.net (SMS) + SadCaptcha (CAPTCHA) + playwright-stealth.
-Cout par compte : ~$0.02.
+Stack : GrizzlySMS (OTP) + CapSolver (CAPTCHA) + playwright-stealth.
 """
 
 import asyncio
+import json
 import os
 import random
 import re
@@ -15,8 +15,9 @@ from pathlib import Path
 import httpx
 from playwright.async_api import async_playwright
 
-FIVESIM_API_KEY = os.getenv("FIVESIM_API_KEY", "")
-SADCAPTCHA_API_KEY = os.getenv("SADCAPTCHA_API_KEY", "")
+SMS_API_KEY = os.getenv("SMS_ACTIVATE_KEY", "")
+SMS_API_URL = os.getenv("SMS_API_URL", "https://api.grizzlysms.com/stubs/handler_api.php")
+CAPSOLVER_KEY = os.getenv("CAPSOLVER_KEY", "")
 
 NICHE_USERNAMES = {
     "restauration": ["LePatronDuResto", "ChefConseilFr", "RestoSuccesFr", "AstucesRestau", "GestionResto"],
@@ -37,82 +38,199 @@ PLAYWRIGHT_ARGS = [
 ]
 
 
-class FiveSimClient:
-    """Client API 5sim.net pour numeros virtuels SMS."""
+# ──────────────────────────────────────────────────────────
+# GrizzlySMS Client (API compatible SMS-activate)
+# ──────────────────────────────────────────────────────────
 
-    BASE_URL = "https://5sim.net/v1"
+class GrizzlySMSClient:
+    """Client API GrizzlySMS (format SMS-activate)."""
 
-    def __init__(self, api_key: str):
-        self.headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Accept": "application/json",
-        }
+    def __init__(self, api_key: str, api_url: str):
+        self.api_key = api_key
+        self.api_url = api_url
 
     async def get_balance(self) -> float:
         async with httpx.AsyncClient() as client:
-            r = await client.get(f"{self.BASE_URL}/user/profile", headers=self.headers)
-            if r.status_code == 200:
-                return r.json().get("balance", 0)
+            r = await client.get(self.api_url, params={
+                "api_key": self.api_key,
+                "action": "getBalance",
+            })
+            text = r.text.strip()
+            if text.startswith("ACCESS_BALANCE:"):
+                return float(text.split(":")[1])
+            print(f"[SMS] Balance error: {text}")
             return 0
 
-    async def buy_number_tiktok(self, country: str = "france") -> dict | None:
+    async def buy_number(self, service: str = "lf", country: str = "12") -> dict | None:
+        """Achete un numero. service='lf' = TikTok, country='12' = France (GrizzlySMS)."""
         async with httpx.AsyncClient() as client:
-            r = await client.get(
-                f"{self.BASE_URL}/user/buy/activation/{country}/any/tiktok",
-                headers=self.headers,
-            )
-            if r.status_code != 200:
-                print(f"[5SIM] Buy failed: {r.status_code} — {r.text[:200]}")
-                return None
+            r = await client.get(self.api_url, params={
+                "api_key": self.api_key,
+                "action": "getNumber",
+                "service": service,
+                "country": country,
+            })
+            text = r.text.strip()
+            if text.startswith("ACCESS_NUMBER:"):
+                parts = text.split(":")
+                order_id = parts[1]
+                phone = parts[2]
+                if not phone.startswith("+"):
+                    phone = "+" + phone
+                return {"order_id": order_id, "phone": phone}
 
-            data = r.json()
-            phone = data.get("phone", "")
-            if not phone.startswith("+"):
-                phone = "+" + phone
+            print(f"[SMS] Buy error: {text}")
+            return None
 
-            return {
-                "order_id": data["id"],
-                "phone": phone,
-                "operator": data.get("operator"),
-                "price": data.get("price", 0),
-            }
-
-    async def wait_for_sms(self, order_id: int, max_wait: int = 120) -> str | None:
+    async def wait_for_sms(self, order_id: str, max_wait: int = 120) -> str | None:
+        """Attend le SMS OTP. Retourne le code ou None."""
         async with httpx.AsyncClient() as client:
+            # D'abord signaler qu'on attend le SMS
+            await client.get(self.api_url, params={
+                "api_key": self.api_key,
+                "action": "setStatus",
+                "id": order_id,
+                "status": "1",  # SMS envoye, on attend
+            })
+
             for attempt in range(max_wait // 5):
                 await asyncio.sleep(5)
-                r = await client.get(
-                    f"{self.BASE_URL}/user/check/{order_id}",
-                    headers=self.headers,
-                )
-                if r.status_code != 200:
-                    continue
+                r = await client.get(self.api_url, params={
+                    "api_key": self.api_key,
+                    "action": "getStatus",
+                    "id": order_id,
+                })
+                text = r.text.strip()
 
-                data = r.json()
-                status = data.get("status", "")
+                if text.startswith("STATUS_OK:"):
+                    code_text = text.split(":")[1]
+                    code = re.search(r"\b(\d{4,6})\b", code_text)
+                    if code:
+                        return code.group(1)
+                    return code_text.strip()
 
-                if status == "RECEIVED":
-                    sms_list = data.get("sms", [])
-                    if sms_list:
-                        sms_text = sms_list[0].get("text", "")
-                        code = re.search(r"\b(\d{4,6})\b", sms_text)
-                        if code:
-                            return code.group(1)
-                elif status in ("BANNED", "EXPIRED", "CANCELED"):
-                    print(f"[5SIM] Order {order_id} status={status}")
+                if text in ("STATUS_CANCEL", "STATUS_WAIT_RETRY"):
+                    print(f"[SMS] Order {order_id} status={text}")
                     return None
 
-                print(f"  SMS wait... ({attempt * 5}s/{max_wait}s) status={status}")
+                print(f"  SMS wait... ({attempt * 5}s/{max_wait}s) {text}")
 
         return None
 
-    async def cancel_number(self, order_id: int):
+    async def cancel_number(self, order_id: str):
         async with httpx.AsyncClient() as client:
-            await client.get(
-                f"{self.BASE_URL}/user/cancel/{order_id}",
-                headers=self.headers,
+            await client.get(self.api_url, params={
+                "api_key": self.api_key,
+                "action": "setStatus",
+                "id": order_id,
+                "status": "8",  # Annuler
+            })
+
+
+# ──────────────────────────────────────────────────────────
+# CapSolver Client
+# ──────────────────────────────────────────────────────────
+
+async def _solve_captcha_capsolver(page) -> bool:
+    """Resout le CAPTCHA TikTok via CapSolver API."""
+    if not CAPSOLVER_KEY:
+        print("[CAPTCHA] CAPSOLVER_KEY not set, skipping")
+        return False
+
+    # Detecter si un CAPTCHA est present
+    captcha_present = False
+    for selector in [
+        '[id*="captcha"]',
+        '[class*="captcha"]',
+        'iframe[src*="captcha"]',
+        '[data-e2e="captcha"]',
+    ]:
+        try:
+            el = page.locator(selector).first
+            if await el.is_visible(timeout=2000):
+                captcha_present = True
+                break
+        except Exception:
+            continue
+
+    if not captcha_present:
+        print("[CAPTCHA] Pas de CAPTCHA detecte")
+        return True
+
+    print("[CAPTCHA] CAPTCHA detecte, resolution via CapSolver...")
+
+    try:
+        async with httpx.AsyncClient() as client:
+            page_url = page.url
+
+            # Creer la tache CapSolver (Turnstile)
+            create_resp = await client.post(
+                "https://api.capsolver.com/createTask",
+                json={
+                    "clientKey": CAPSOLVER_KEY,
+                    "task": {
+                        "type": "AntiTurnstileTaskProxyLess",
+                        "websiteURL": page_url,
+                        "websiteKey": "0x4AAAAAAADnPIDROrmt1Wwj",
+                    },
+                },
+                timeout=30,
             )
 
+            if create_resp.status_code != 200:
+                print(f"[CAPTCHA] CapSolver create error: {create_resp.text[:200]}")
+                return False
+
+            result = create_resp.json()
+            task_id = result.get("taskId")
+            if not task_id:
+                print(f"[CAPTCHA] CapSolver: {result.get('errorDescription', 'no taskId')}")
+                return False
+
+            print(f"[CAPTCHA] Task cree: {task_id}")
+
+            # Attendre le resultat
+            for _ in range(30):
+                await asyncio.sleep(3)
+                check_resp = await client.post(
+                    "https://api.capsolver.com/getTaskResult",
+                    json={"clientKey": CAPSOLVER_KEY, "taskId": task_id},
+                    timeout=15,
+                )
+                check_result = check_resp.json()
+                status = check_result.get("status")
+
+                if status == "ready":
+                    token = check_result.get("solution", {}).get("token")
+                    if token:
+                        # Injecter le token dans la page
+                        await page.evaluate(
+                            """(token) => {
+                                const input = document.querySelector('[name="cf-turnstile-response"]');
+                                if (input) input.value = token;
+                                const cb = window.turnstileCallback || window.onTurnstileSuccess;
+                                if (cb) cb(token);
+                            }""",
+                            token,
+                        )
+                        print("[CAPTCHA] Resolu via CapSolver!")
+                        await asyncio.sleep(2)
+                        return True
+
+                if status == "failed":
+                    print(f"[CAPTCHA] CapSolver failed: {check_result.get('errorDescription')}")
+                    return False
+
+        return False
+
+    except Exception as e:
+        print(f"[CAPTCHA] CapSolver error: {e}")
+        return False
+
+
+# ──────────────────────────────────────────────────────────
+# Account Creation
+# ──────────────────────────────────────────────────────────
 
 async def create_tiktok_account(
     niche: str,
@@ -121,32 +239,32 @@ async def create_tiktok_account(
     headless: bool = True,
 ) -> dict:
     """Cree un compte TikTok complet. Retourne {success, username, phone, cookies_path, error}."""
-    if not FIVESIM_API_KEY:
-        return {"success": False, "error": "FIVESIM_API_KEY not configured"}
+    if not SMS_API_KEY:
+        return {"success": False, "error": "SMS_ACTIVATE_KEY not configured"}
 
-    fivesim = FiveSimClient(FIVESIM_API_KEY)
+    sms_client = GrizzlySMSClient(SMS_API_KEY, SMS_API_URL)
 
-    balance = await fivesim.get_balance()
-    if balance < 0.05:
-        return {"success": False, "error": f"5sim balance too low: ${balance:.2f}"}
+    balance = await sms_client.get_balance()
+    if balance < 5:
+        return {"success": False, "error": f"SMS balance trop faible: {balance} RUB"}
 
-    print(f"[ACCOUNT] 5sim balance: ${balance:.2f}")
+    print(f"[ACCOUNT] SMS balance: {balance} RUB")
 
     username_base = random.choice(NICHE_USERNAMES.get(niche, ["ProFrance"]))
     username = f"{username_base}{random.randint(10, 99)}"
     password = _generate_password()
 
     print("[ACCOUNT] Achat numero TikTok FR...")
-    number_info = await fivesim.buy_number_tiktok(country="france")
+    number_info = await sms_client.buy_number(service="lf", country="12")
     if not number_info:
-        return {"success": False, "error": "Failed to buy 5sim number"}
+        return {"success": False, "error": "Echec achat numero GrizzlySMS"}
 
     phone = number_info["phone"]
     order_id = number_info["order_id"]
     print(f"  Numero: {phone} (order: {order_id})")
 
     if not save_cookies_path:
-        cookies_dir = Path("backend/tiktok/cookies")
+        cookies_dir = Path("/tmp/tiktok_cookies")
         cookies_dir.mkdir(parents=True, exist_ok=True)
         save_cookies_path = str(cookies_dir / f"{niche}_{username}.txt")
 
@@ -234,12 +352,12 @@ async def create_tiktok_account(
             except Exception as e:
                 await page.screenshot(path=f"/tmp/tiktok_signup_debug_{niche}.png")
                 await browser.close()
-                await fivesim.cancel_number(order_id)
+                await sms_client.cancel_number(order_id)
                 return {"success": False, "error": f"Phone input failed: {e}"}
 
-            # 5. CAPTCHA
+            # 5. CAPTCHA (CapSolver)
             print("[ACCOUNT] CAPTCHA check...")
-            await _solve_captcha_if_present(page)
+            await _solve_captcha_capsolver(page)
 
             # 6. Envoyer OTP
             send_code_btn = page.locator('[data-e2e="signup-send-code-btn"]').first
@@ -249,8 +367,8 @@ async def create_tiktok_account(
                 await send_code_btn.click()
                 print("[ACCOUNT] Code SMS envoye...")
 
-            # 7. Attendre OTP
-            otp_code = await fivesim.wait_for_sms(order_id, max_wait=120)
+            # 7. Attendre OTP via GrizzlySMS
+            otp_code = await sms_client.wait_for_sms(order_id, max_wait=120)
             if not otp_code:
                 await browser.close()
                 return {"success": False, "error": "Timeout waiting for SMS OTP"}
@@ -321,21 +439,8 @@ async def create_tiktok_account(
             except Exception:
                 pass
             await browser.close()
-            await fivesim.cancel_number(order_id)
+            await sms_client.cancel_number(order_id)
             return {"success": False, "error": str(e)}
-
-
-async def _solve_captcha_if_present(page) -> bool:
-    if not SADCAPTCHA_API_KEY:
-        return False
-    try:
-        from tiktok_captcha_solver import AsyncSadCaptchaSolver
-        solver = AsyncSadCaptchaSolver(sadcaptcha_api_key=SADCAPTCHA_API_KEY)
-        await solver.solve_captcha_if_present(page, max_attempts=3)
-        return True
-    except Exception as e:
-        print(f"  CAPTCHA solver: {e}")
-        return False
 
 
 async def _type_like_human(element, text: str):

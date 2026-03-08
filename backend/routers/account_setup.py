@@ -20,14 +20,14 @@ async def create_account(req: CreateAccountRequest, background_tasks: Background
     import os
 
     # Validation upfront
-    fivesim_key = os.getenv("FIVESIM_API_KEY", "")
-    sadcaptcha_key = os.getenv("SADCAPTCHA_API_KEY", "")
+    sms_key = os.getenv("SMS_ACTIVATE_KEY", "")
+    capsolver_key = os.getenv("CAPSOLVER_KEY", "")
 
     missing = []
-    if not fivesim_key:
-        missing.append("FIVESIM_API_KEY")
-    if not sadcaptcha_key:
-        missing.append("SADCAPTCHA_API_KEY")
+    if not sms_key:
+        missing.append("SMS_ACTIVATE_KEY")
+    if not capsolver_key:
+        missing.append("CAPSOLVER_KEY")
 
     if missing:
         raise HTTPException(
@@ -69,14 +69,14 @@ async def create_all_accounts():
     """Cree un compte pour chaque niche non configuree."""
     import os
 
-    fivesim_key = os.getenv("FIVESIM_API_KEY", "")
-    sadcaptcha_key = os.getenv("SADCAPTCHA_API_KEY", "")
+    sms_key = os.getenv("SMS_ACTIVATE_KEY", "")
+    capsolver_key = os.getenv("CAPSOLVER_KEY", "")
 
     missing = []
-    if not fivesim_key:
-        missing.append("FIVESIM_API_KEY")
-    if not sadcaptcha_key:
-        missing.append("SADCAPTCHA_API_KEY")
+    if not sms_key:
+        missing.append("SMS_ACTIVATE_KEY")
+    if not capsolver_key:
+        missing.append("CAPSOLVER_KEY")
 
     if missing:
         raise HTTPException(
