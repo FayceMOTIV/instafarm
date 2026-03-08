@@ -306,11 +306,11 @@ async def _solve_captcha_capsolver(page) -> bool:
 # Account Creation
 # ──────────────────────────────────────────────────────────
 
-# Mapping pays GrizzlySMS : (grizzly_country_code, phone_prefix, tiktok_country_name)
+# Mapping pays : GrizzlySMS code, phone prefix, locale/timezone pour Playwright
 COUNTRY_CONFIGS = [
-    {"name": "UK", "grizzly": "16", "prefix": "+44", "tiktok_label": "United Kingdom"},
-    {"name": "Indonesia", "grizzly": "6", "prefix": "+62", "tiktok_label": "Indonesia"},
-    {"name": "France", "grizzly": "78", "prefix": "+33", "tiktok_label": "France"},
+    {"name": "UK", "grizzly": "16", "prefix": "+44", "locale": "en-GB", "tz": "Europe/London"},
+    {"name": "Indonesia", "grizzly": "6", "prefix": "+62", "locale": "id-ID", "tz": "Asia/Jakarta"},
+    {"name": "France", "grizzly": "78", "prefix": "+33", "locale": "fr-FR", "tz": "Europe/Paris"},
 ]
 
 
@@ -344,7 +344,8 @@ async def create_tiktok_account(
             sms_service="ds",
             sms_country=country_cfg["grizzly"],
             phone_prefix=country_cfg["prefix"],
-            tiktok_country_label=country_cfg["tiktok_label"],
+            browser_locale=country_cfg["locale"],
+            browser_tz=country_cfg["tz"],
             proxy=proxy,
             save_cookies_path=save_cookies_path,
             headless=headless,
@@ -369,7 +370,8 @@ async def _attempt_tiktok_signup(
     sms_service: str = "ds",
     sms_country: str = "16",
     phone_prefix: str = "+44",
-    tiktok_country_label: str = "United Kingdom",
+    browser_locale: str = "en-GB",
+    browser_tz: str = "Europe/London",
     proxy: str | None = None,
     save_cookies_path: str | None = None,
     headless: bool = True,
@@ -404,6 +406,7 @@ async def _attempt_tiktok_signup(
             launch_kwargs["proxy"] = {"server": proxy}
 
         browser = await p.chromium.launch(**launch_kwargs)
+        print(f"  Browser: locale={browser_locale}, tz={browser_tz}")
         context = await browser.new_context(
             viewport={"width": 390, "height": 844},
             user_agent=(
@@ -411,8 +414,8 @@ async def _attempt_tiktok_signup(
                 "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
                 "Mobile/15E148 Safari/604.1"
             ),
-            locale="fr-FR",
-            timezone_id="Europe/Paris",
+            locale=browser_locale,
+            timezone_id=browser_tz,
         )
 
         page = await context.new_page()
@@ -561,8 +564,21 @@ async def _attempt_tiktok_signup(
             # Nettoyer overlays avant de cliquer
             await _remove_overlays(page)
 
+            # Debug : dump le HTML parent du phone input pour comprendre le selecteur pays
+            parent_html = await page.evaluate("""
+                () => {
+                    const ph = document.querySelector('input[name="mobile"]') || document.querySelector('input[type="tel"]');
+                    if (!ph) return 'NO_INPUT';
+                    // Remonter 3 niveaux et capturer le HTML
+                    let el = ph;
+                    for (let i = 0; i < 4 && el.parentElement; i++) el = el.parentElement;
+                    return el.innerHTML.slice(0, 1500);
+                }
+            """)
+            print(f"  [DEBUG HTML] {parent_html[:500]}")
+
             # Selectionner le bon pays dans le dropdown TikTok
-            await _select_tiktok_country(page, tiktok_country_label, phone_prefix)
+            await _select_tiktok_country(page, "n/a", phone_prefix)
 
             # Convertir en numero local (sans prefix international)
             phone_local = phone
