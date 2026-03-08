@@ -305,21 +305,35 @@ async def create_tiktok_account(
             await page.screenshot(path="/tmp/tiktok_step1_loaded.png")
             print(f"  Step 1 URL: {page.url}")
 
-            # 2. Accepter cookies/consent si present
+            # 2. Accepter cookies/consent + supprimer overlays
             for consent_sel in [
                 'button:has-text("Accept all")',
+                'button:has-text("Accepter tout")',
                 'button:has-text("Accepter")',
+                'button:has-text("Allow all")',
                 'button:has-text("Allow")',
                 '[data-testid="cookie-banner-accept"]',
+                'button:has-text("Accept")',
             ]:
                 try:
                     btn = page.locator(consent_sel).first
-                    if await btn.is_visible(timeout=2000):
+                    if await btn.is_visible(timeout=1500):
                         await btn.click()
                         await asyncio.sleep(1)
+                        print(f"  Consent clique: {consent_sel}")
                         break
                 except Exception:
                     continue
+
+            # Supprimer tous les floating-ui portals qui bloquent les clics
+            await page.evaluate("""
+                () => {
+                    document.querySelectorAll('[data-floating-ui-portal]').forEach(el => el.remove());
+                    document.querySelectorAll('[id^="floating-ui"]').forEach(el => el.remove());
+                    document.querySelectorAll('.tiktok-cookie-banner').forEach(el => el.remove());
+                }
+            """)
+            await asyncio.sleep(0.5)
 
             # 3. Date de naissance (selectors multiples)
             print("[ACCOUNT] Birthday...")
@@ -414,8 +428,11 @@ async def create_tiktok_account(
                 await sms_client.cancel_number(order_id)
                 return {"success": False, "error": "Phone input introuvable. Screenshot saved."}
 
+            # Nettoyer overlays avant de cliquer
+            await _remove_overlays(page)
+
             phone_local = phone.replace("+33", "0")
-            await phone_input.click()
+            await phone_input.click(force=True)
             await asyncio.sleep(0.5)
             await _type_like_human(phone_input, phone_local)
             await asyncio.sleep(1)
@@ -426,12 +443,31 @@ async def create_tiktok_account(
             await _solve_captcha_capsolver(page)
 
             # 6. Envoyer OTP
-            send_code_btn = page.locator('[data-e2e="signup-send-code-btn"]').first
-            if not await send_code_btn.is_visible(timeout=3000):
-                send_code_btn = page.locator('text="Send code"').first
-            if await send_code_btn.is_visible(timeout=3000):
-                await send_code_btn.click()
+            await _remove_overlays(page)
+            send_code_btn = None
+            for sel in [
+                '[data-e2e="signup-send-code-btn"]',
+                'button:has-text("Send code")',
+                'button:has-text("Envoyer")',
+                'button:has-text("Envoyer le code")',
+                'a:has-text("Send code")',
+            ]:
+                try:
+                    btn = page.locator(sel).first
+                    if await btn.is_visible(timeout=2000):
+                        send_code_btn = btn
+                        break
+                except Exception:
+                    continue
+
+            if send_code_btn:
+                await send_code_btn.click(force=True)
                 print("[ACCOUNT] Code SMS envoye...")
+            else:
+                print("[ACCOUNT] Bouton Send code introuvable, tentative Enter...")
+                await page.keyboard.press("Enter")
+            await asyncio.sleep(2)
+            await page.screenshot(path="/tmp/tiktok_step6_sendcode.png")
 
             # 7. Attendre OTP via GrizzlySMS
             otp_code = await sms_client.wait_for_sms(order_id, max_wait=120)
@@ -507,6 +543,23 @@ async def create_tiktok_account(
             await browser.close()
             await sms_client.cancel_number(order_id)
             return {"success": False, "error": str(e)}
+
+
+async def _remove_overlays(page):
+    """Supprime les popups/overlays qui bloquent les clics."""
+    await page.evaluate("""
+        () => {
+            document.querySelectorAll('[data-floating-ui-portal]').forEach(el => el.remove());
+            document.querySelectorAll('[id^="floating-ui"]').forEach(el => el.remove());
+            document.querySelectorAll('.tiktok-cookie-banner').forEach(el => el.remove());
+            document.querySelectorAll('[class*="modal-mask"]').forEach(el => el.remove());
+            document.querySelectorAll('[class*="overlay"]').forEach(el => {
+                if (el.style.position === 'fixed' || el.style.position === 'absolute') {
+                    el.remove();
+                }
+            });
+        }
+    """)
 
 
 async def _type_like_human(element, text: str):
