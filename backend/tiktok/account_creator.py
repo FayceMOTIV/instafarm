@@ -422,24 +422,24 @@ async def create_tiktok_account(
 ) -> dict:
     """Cree un compte TikTok — SMS-Man UK puis Indonesie (fallback GrizzlySMS)."""
 
-    # Phase 1 : SMS-Man (prioritaire)
+    # Phase 1 : SMS-Man via API SMS-activate (prioritaire, 25000 numeros UK dispo)
     if SMSMAN_API_KEY:
-        smsman = SmsManClient(SMSMAN_API_KEY)
-        balance = await smsman.get_balance()
-        print(f"[ACCOUNT] SMS-Man balance: {balance}")
+        smsman_url = "https://api.sms-man.com/stubs/handler_api.php"
+        smsman_client = GrizzlySMSClient(SMSMAN_API_KEY, smsman_url)
+        balance = await smsman_client.get_balance()
+        print(f"[ACCOUNT] SMS-Man balance: {balance} RUB")
 
-        if balance >= 0.5:
+        if balance >= 5:
             last_error = ""
             for country_cfg in COUNTRY_CONFIGS[:2]:  # UK, Indonesia
                 cname = country_cfg["name"]
-                smsman_country_id = SMSMAN_COUNTRIES.get(cname, 10)
-                print(f"\n[ACCOUNT] === SMS-Man {cname} (id={smsman_country_id}) — pour {niche} ===")
+                print(f"\n[ACCOUNT] === SMS-Man 'lf' {cname} — pour {niche} ===")
 
                 result = await _attempt_tiktok_signup(
                     niche=niche,
-                    sms_client=smsman,
-                    sms_service="smsman",
-                    sms_country=str(smsman_country_id),
+                    sms_client=smsman_client,
+                    sms_service="lf",
+                    sms_country=country_cfg["grizzly"],
                     phone_prefix=country_cfg["prefix"],
                     country_search=country_cfg["search"],
                     browser_locale=country_cfg["locale"],
@@ -467,7 +467,7 @@ async def create_tiktok_account(
     if SMS_API_KEY:
         sms_client = GrizzlySMSClient(SMS_API_KEY, SMS_API_URL)
         balance = await sms_client.get_balance()
-        print(f"[ACCOUNT] GrizzlySMS balance: {balance} RUB")
+        print(f"[ACCOUNT] GrizzlySMS fallback balance: {balance} RUB")
 
         if balance >= 5:
             for country_cfg in COUNTRY_CONFIGS[:2]:
