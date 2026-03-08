@@ -763,10 +763,42 @@ async def _attempt_tiktok_signup(
             else:
                 print("[ACCOUNT] Bouton Send code introuvable, tentative Enter...")
                 await page.keyboard.press("Enter")
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
             await page.screenshot(path="/tmp/tiktok_step6_sendcode.png")
 
-            # 7. Attendre OTP via GrizzlySMS (180s)
+            # 6b. Verifier erreurs + captcha apres envoi
+            page_text = await page.evaluate("() => document.body.innerText.slice(0, 2000)")
+            # Chercher messages d'erreur TikTok
+            error_keywords = [
+                "too many attempts", "try again later", "invalid phone",
+                "not valid", "already registered", "error", "something went wrong",
+                "captcha", "verify", "slide", "puzzle",
+            ]
+            for kw in error_keywords:
+                if kw.lower() in page_text.lower():
+                    print(f"  [POST-SEND] Detected: '{kw}' in page text")
+
+            # Verifier si un captcha slider/puzzle est apparu
+            captcha_after = await page.evaluate("""
+                () => {
+                    const els = document.querySelectorAll('[id*="captcha"], [class*="captcha"], [class*="Captcha"], [class*="verify"], iframe[src*="captcha"]');
+                    if (els.length > 0) {
+                        return Array.from(els).map(e => ({
+                            tag: e.tagName,
+                            id: e.id,
+                            cls: (e.className || '').toString().slice(0, 80),
+                            visible: e.getBoundingClientRect().height > 0,
+                        }));
+                    }
+                    return null;
+                }
+            """)
+            if captcha_after:
+                print(f"  [POST-SEND] CAPTCHA elements found: {captcha_after}")
+            else:
+                print("  [POST-SEND] No captcha, no obvious error")
+
+            # 7. Attendre OTP (180s)
             otp_code = await sms_client.wait_for_sms(order_id, max_wait=180)
             if not otp_code:
                 await browser.close()
