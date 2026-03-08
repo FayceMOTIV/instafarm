@@ -306,11 +306,11 @@ async def _solve_captcha_capsolver(page) -> bool:
 # Account Creation
 # ──────────────────────────────────────────────────────────
 
-# Mapping pays : GrizzlySMS code, phone prefix, locale/timezone pour Playwright
+# Mapping pays : GrizzlySMS code, phone prefix, locale/timezone, nom dans dropdown TikTok
 COUNTRY_CONFIGS = [
-    {"name": "UK", "grizzly": "16", "prefix": "+44", "locale": "en-GB", "tz": "Europe/London"},
-    {"name": "Indonesia", "grizzly": "6", "prefix": "+62", "locale": "id-ID", "tz": "Asia/Jakarta"},
-    {"name": "France", "grizzly": "78", "prefix": "+33", "locale": "fr-FR", "tz": "Europe/Paris"},
+    {"name": "UK", "grizzly": "16", "prefix": "+44", "locale": "en-GB", "tz": "Europe/London", "search": "United Kingdom"},
+    {"name": "Indonesia", "grizzly": "6", "prefix": "+62", "locale": "id-ID", "tz": "Asia/Jakarta", "search": "Indonesia"},
+    {"name": "France", "grizzly": "78", "prefix": "+33", "locale": "fr-FR", "tz": "Europe/Paris", "search": "France"},
 ]
 
 
@@ -344,6 +344,7 @@ async def create_tiktok_account(
             sms_service="ds",
             sms_country=country_cfg["grizzly"],
             phone_prefix=country_cfg["prefix"],
+            country_search=country_cfg["search"],
             browser_locale=country_cfg["locale"],
             browser_tz=country_cfg["tz"],
             proxy=proxy,
@@ -370,6 +371,7 @@ async def _attempt_tiktok_signup(
     sms_service: str = "ds",
     sms_country: str = "16",
     phone_prefix: str = "+44",
+    country_search: str = "United Kingdom",
     browser_locale: str = "en-GB",
     browser_tz: str = "Europe/London",
     proxy: str | None = None,
@@ -578,7 +580,7 @@ async def _attempt_tiktok_signup(
             print(f"  [DEBUG HTML] {parent_html[:500]}")
 
             # Selectionner le bon pays dans le dropdown TikTok
-            await _select_tiktok_country(page, "n/a", phone_prefix)
+            await _select_tiktok_country(page, phone_prefix, country_search)
 
             # Convertir en numero local (sans prefix international)
             phone_local = phone
@@ -704,99 +706,109 @@ async def _attempt_tiktok_signup(
             return {"success": False, "error": str(e)}
 
 
-async def _select_tiktok_country(page, _label: str, phone_prefix: str):
+async def _select_tiktok_country(page, phone_prefix: str, country_search: str):
     """Selectionne le pays dans le dropdown code pays TikTok.
 
-    Structure TikTok identifiee :
+    Structure TikTok :
       <div role="select" class="..DivAreaLabelContainer..">
-        <span class="..SpanLabelContainer..">NL +31</span>
+        <span>NL +31</span>
       </div>
+    Dropdown : liste de <li> avec nom pays + code.
     """
     prefix_num = phone_prefix.lstrip("+")  # "+44" -> "44"
 
     try:
-        # 1. Cliquer le selecteur pays (div[role="select"] pres du phone input)
+        # 1. Cliquer le selecteur pays
         area_btn = None
         for sel in [
             'div[role="select"][class*="AreaLabel"]',
             'div[role="select"]',
-            'span[class*="SpanLabel"][class*="eex98o"]',
         ]:
             try:
                 el = page.locator(sel).first
                 if await el.is_visible(timeout=2000):
                     area_btn = el
-                    current_text = await el.text_content()
-                    print(f"  Country current: '{current_text}' (selector: {sel})")
+                    current_text = (await el.text_content()).strip()
+                    print(f"  Country current: '{current_text}'")
+                    # Si deja le bon pays, pas besoin de changer
+                    if f"+{prefix_num}" in current_text:
+                        print(f"  Already on +{prefix_num}, skip")
+                        return
                     break
             except Exception:
                 continue
 
         if not area_btn:
-            print(f"  Country selector (div[role=select]) non trouve")
+            print("  Country selector non trouve")
             return
 
-        # Cliquer pour ouvrir le dropdown
         await area_btn.click(force=True)
         await asyncio.sleep(1.5)
-        await page.screenshot(path="/tmp/tiktok_country_dropdown.png")
 
-        # 2. Chercher un champ de recherche dans le dropdown ouvert
+        # 2. Chercher le champ de recherche et taper le NOM DU PAYS
         search_input = None
         for sel in [
             'input[type="search"]',
-            'input[placeholder*="search" i]',
-            'input[placeholder*="Search" i]',
-            'input[data-e2e="search"]',
+            'input[placeholder*="earch" i]',
             'input[type="text"]:visible',
         ]:
             try:
                 inp = page.locator(sel).first
                 if await inp.is_visible(timeout=2000):
                     search_input = inp
-                    print(f"  Search input found: {sel}")
                     break
             except Exception:
                 continue
 
         if search_input:
-            await search_input.fill("")
-            await asyncio.sleep(0.3)
-            # Taper le code prefix pour filtrer (ex: "44" ou "62")
-            await search_input.fill(prefix_num)
+            await search_input.fill(country_search)
             await asyncio.sleep(1)
+            print(f"  Searched: '{country_search}'")
         else:
-            print("  Pas de search input, scroll vers le pays")
+            print("  No search input")
 
-        # 3. Cliquer l'option contenant le bon prefix
+        # 3. Cliquer le premier <li> visible (resultat filtre)
+        # Apres la recherche, les <li> visibles devraient contenir le pays
         country_clicked = False
-        for sel in [
-            f'li:has-text("+{prefix_num}")',
-            f'div:has-text("+{prefix_num}")',
-            f'span:has-text("+{prefix_num}")',
-            f'[class*="option"]:has-text("+{prefix_num}")',
-        ]:
-            try:
-                options = page.locator(sel)
-                count = await options.count()
-                for i in range(min(count, 5)):
-                    option = options.nth(i)
-                    if await option.is_visible(timeout=1500):
-                        text = await option.text_content()
-                        # Verifier que c'est le bon prefix (pas juste un sous-texte)
-                        if f"+{prefix_num}" in text:
-                            await option.click()
-                            country_clicked = True
-                            print(f"  Country selected: '{text.strip()}'")
-                            break
-                if country_clicked:
-                    break
-            except Exception:
-                continue
+
+        # D'abord via JS pour cliquer le premier <li> visible dans la liste
+        clicked_text = await page.evaluate(f"""
+            () => {{
+                // Chercher tous les <li> dans le dropdown
+                const items = document.querySelectorAll('li');
+                for (const li of items) {{
+                    const text = li.textContent || '';
+                    // Match sur le nom du pays OU le prefix
+                    if (text.includes('{country_search}') || text.includes('+{prefix_num}')) {{
+                        // Verifier que c'est visible
+                        const rect = li.getBoundingClientRect();
+                        if (rect.height > 0 && rect.width > 0) {{
+                            li.click();
+                            return text.trim().slice(0, 60);
+                        }}
+                    }}
+                }}
+                return null;
+            }}
+        """)
+
+        if clicked_text:
+            country_clicked = True
+            print(f"  Country selected via JS: '{clicked_text}'")
 
         if not country_clicked:
-            print(f"  WARN: Could not find +{prefix_num} in dropdown")
-            # Fermer le dropdown en cliquant ailleurs
+            # Fallback Playwright : cliquer le premier li visible
+            try:
+                li = page.locator(f'li:has-text("{country_search}")').first
+                if await li.is_visible(timeout=2000):
+                    await li.click()
+                    country_clicked = True
+                    print(f"  Country selected via locator: {country_search}")
+            except Exception:
+                pass
+
+        if not country_clicked:
+            print(f"  WARN: Could not select {country_search}")
             await page.keyboard.press("Escape")
 
         await asyncio.sleep(0.5)
