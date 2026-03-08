@@ -18,6 +18,7 @@ from playwright.async_api import async_playwright
 SMS_API_KEY = os.getenv("SMS_ACTIVATE_KEY", "")
 SMS_API_URL = os.getenv("SMS_API_URL", "https://api.grizzlysms.com/stubs/handler_api.php")
 CAPSOLVER_KEY = os.getenv("CAPSOLVER_KEY", "")
+FIVESIM_API_KEY = os.getenv("FIVESIM_API_KEY", "")
 
 NICHE_USERNAMES = {
     "restauration": ["LePatronDuResto", "ChefConseilFr", "RestoSuccesFr", "AstucesRestau", "GestionResto"],
@@ -125,6 +126,79 @@ class GrizzlySMSClient:
                 "id": order_id,
                 "status": "8",  # Annuler
             })
+
+
+# ──────────────────────────────────────────────────────────
+# 5sim.net Client (fallback SMS provider)
+# ──────────────────────────────────────────────────────────
+
+class FiveSimClient:
+    """Client API 5sim.net pour reception SMS."""
+
+    BASE_URL = "https://5sim.net/v1"
+
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
+
+    async def get_balance(self) -> float:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"{self.BASE_URL}/user/profile", headers=self.headers, timeout=10)
+            if r.status_code == 200:
+                return r.json().get("balance", 0)
+            print(f"[5SIM] Balance error: {r.status_code} {r.text[:200]}")
+            return 0
+
+    async def buy_number(self, country: str = "france", product: str = "tiktok") -> dict | None:
+        """Achete un numero 5sim. country='france', product='tiktok'."""
+        url = f"{self.BASE_URL}/user/buy/activation/{country}/any/{product}"
+        async with httpx.AsyncClient() as client:
+            r = await client.get(url, headers=self.headers, timeout=15)
+            if r.status_code == 200:
+                data = r.json()
+                phone = data.get("phone", "")
+                if not phone.startswith("+"):
+                    phone = "+" + phone
+                return {"order_id": str(data["id"]), "phone": phone}
+            print(f"[5SIM] Buy error: {r.status_code} {r.text[:200]}")
+            return None
+
+    async def wait_for_sms(self, order_id: str, max_wait: int = 180) -> str | None:
+        """Attend le SMS OTP via 5sim. Retourne le code ou None."""
+        url = f"{self.BASE_URL}/user/check/{order_id}"
+        async with httpx.AsyncClient() as client:
+            for attempt in range(max_wait // 5):
+                await asyncio.sleep(5)
+                r = await client.get(url, headers=self.headers, timeout=10)
+                if r.status_code != 200:
+                    print(f"  [5SIM] Check error: {r.status_code}")
+                    continue
+                data = r.json()
+                status = data.get("status", "")
+                sms_list = data.get("sms", [])
+
+                if sms_list:
+                    code_text = sms_list[0].get("code", "")
+                    if code_text:
+                        return code_text
+                    # Extraire code du texte brut
+                    text = sms_list[0].get("text", "")
+                    code = re.search(r"\b(\d{4,6})\b", text)
+                    if code:
+                        return code.group(1)
+
+                if status in ("CANCELED", "TIMEOUT", "BANNED"):
+                    print(f"  [5SIM] Order {order_id} status={status}")
+                    return None
+
+                print(f"  [5SIM] wait... ({attempt * 5}s/{max_wait}s) status={status}")
+
+        return None
+
+    async def cancel_number(self, order_id: str):
+        url = f"{self.BASE_URL}/user/cancel/{order_id}"
+        async with httpx.AsyncClient() as client:
+            await client.get(url, headers=self.headers, timeout=10)
 
 
 # ──────────────────────────────────────────────────────────
@@ -237,49 +311,73 @@ async def create_tiktok_account(
     proxy: str | None = None,
     save_cookies_path: str | None = None,
     headless: bool = True,
-    max_retries: int = 3,
 ) -> dict:
-    """Cree un compte TikTok avec retry automatique (nouveau numero a chaque essai)."""
-    if not SMS_API_KEY:
-        return {"success": False, "error": "SMS_ACTIVATE_KEY not configured"}
+    """Cree un compte TikTok — GrizzlySMS 'ds' x2 puis 5sim.net fallback."""
 
-    sms_client = GrizzlySMSClient(SMS_API_KEY, SMS_API_URL)
+    # Phase 1 : GrizzlySMS service "ds" (2 tentatives)
+    if SMS_API_KEY:
+        sms_client = GrizzlySMSClient(SMS_API_KEY, SMS_API_URL)
+        balance = await sms_client.get_balance()
+        print(f"[ACCOUNT] GrizzlySMS balance: {balance} RUB")
 
-    balance = await sms_client.get_balance()
-    if balance < 5:
-        return {"success": False, "error": f"SMS balance trop faible: {balance} RUB"}
+        if balance >= 5:
+            for attempt in range(1, 3):
+                print(f"\n[ACCOUNT] === GrizzlySMS 'ds' — Tentative {attempt}/2 pour {niche} ===")
+                result = await _attempt_tiktok_signup(
+                    niche=niche,
+                    sms_client=sms_client,
+                    sms_service="ds",
+                    sms_country="78",
+                    proxy=proxy,
+                    save_cookies_path=save_cookies_path,
+                    headless=headless,
+                )
+                if result["success"]:
+                    return result
+                print(f"[ACCOUNT] GrizzlySMS tentative {attempt} echouee: {result.get('error')}")
+                if attempt < 2:
+                    wait = 10 + random.randint(0, 10)
+                    print(f"[ACCOUNT] Attente {wait}s avant retry...")
+                    await asyncio.sleep(wait)
 
-    print(f"[ACCOUNT] SMS balance: {balance} RUB")
+            print("[ACCOUNT] GrizzlySMS 'ds' echoue 2x — switch vers 5sim.net")
+        else:
+            print(f"[ACCOUNT] GrizzlySMS balance trop faible ({balance}), skip vers 5sim")
+    else:
+        print("[ACCOUNT] SMS_ACTIVATE_KEY absent, skip GrizzlySMS")
 
-    last_error = ""
-    for attempt in range(1, max_retries + 1):
-        print(f"\n[ACCOUNT] === Tentative {attempt}/{max_retries} pour {niche} ===")
+    # Phase 2 : 5sim.net fallback (1 tentative)
+    if not FIVESIM_API_KEY:
+        return {"success": False, "error": "GrizzlySMS echoue et FIVESIM_API_KEY non configure"}
 
-        result = await _attempt_tiktok_signup(
-            niche=niche,
-            sms_client=sms_client,
-            proxy=proxy,
-            save_cookies_path=save_cookies_path,
-            headless=headless,
-        )
+    fivesim_client = FiveSimClient(FIVESIM_API_KEY)
+    balance_5sim = await fivesim_client.get_balance()
+    print(f"[ACCOUNT] 5sim.net balance: {balance_5sim} RUB")
 
-        if result["success"]:
-            return result
+    if balance_5sim < 10:
+        return {"success": False, "error": f"5sim balance trop faible: {balance_5sim}"}
 
-        last_error = result.get("error", "unknown")
-        print(f"[ACCOUNT] Tentative {attempt} echouee: {last_error}")
+    print(f"\n[ACCOUNT] === 5sim.net — Tentative pour {niche} ===")
+    result = await _attempt_tiktok_signup(
+        niche=niche,
+        sms_client=fivesim_client,
+        sms_service="tiktok",
+        sms_country="france",
+        proxy=proxy,
+        save_cookies_path=save_cookies_path,
+        headless=headless,
+    )
+    if result["success"]:
+        return result
 
-        if attempt < max_retries:
-            wait = 10 + random.randint(0, 10)
-            print(f"[ACCOUNT] Attente {wait}s avant retry...")
-            await asyncio.sleep(wait)
-
-    return {"success": False, "error": f"Echec apres {max_retries} tentatives. Dernier: {last_error}"}
+    return {"success": False, "error": f"Echec GrizzlySMS 'ds' x2 + 5sim.net. Dernier: {result.get('error')}"}
 
 
 async def _attempt_tiktok_signup(
     niche: str,
-    sms_client: GrizzlySMSClient,
+    sms_client,
+    sms_service: str = "ds",
+    sms_country: str = "78",
     proxy: str | None = None,
     save_cookies_path: str | None = None,
     headless: bool = True,
@@ -289,10 +387,15 @@ async def _attempt_tiktok_signup(
     username = f"{username_base}{random.randint(10, 99)}"
     password = _generate_password()
 
-    print("[ACCOUNT] Achat numero TikTok FR...")
-    number_info = await sms_client.buy_number(service="lf", country="78")
+    provider_name = "5sim" if isinstance(sms_client, FiveSimClient) else "GrizzlySMS"
+    print(f"[ACCOUNT] Achat numero via {provider_name} (service={sms_service}, country={sms_country})...")
+
+    if isinstance(sms_client, FiveSimClient):
+        number_info = await sms_client.buy_number(country=sms_country, product=sms_service)
+    else:
+        number_info = await sms_client.buy_number(service=sms_service, country=sms_country)
     if not number_info:
-        return {"success": False, "error": "Echec achat numero GrizzlySMS"}
+        return {"success": False, "error": f"Echec achat numero {provider_name}"}
 
     phone = number_info["phone"]
     order_id = number_info["order_id"]
