@@ -19,6 +19,7 @@ SMS_API_KEY = os.getenv("SMS_ACTIVATE_KEY", "")
 SMS_API_URL = os.getenv("SMS_API_URL", "https://api.grizzlysms.com/stubs/handler_api.php")
 CAPSOLVER_KEY = os.getenv("CAPSOLVER_KEY", "")
 FIVESIM_API_KEY = os.getenv("FIVESIM_API_KEY", "")
+SMSMAN_API_KEY = os.getenv("SMSMAN_API_KEY", "")
 
 NICHE_USERNAMES = {
     "restauration": ["LePatronDuResto", "ChefConseilFr", "RestoSuccesFr", "AstucesRestau", "GestionResto"],
@@ -202,6 +203,105 @@ class FiveSimClient:
 
 
 # ──────────────────────────────────────────────────────────
+# SMS-Man Client (sms-man.com)
+# ──────────────────────────────────────────────────────────
+
+# SMS-Man country IDs (les plus courants)
+SMSMAN_COUNTRIES = {"UK": 10, "Indonesia": 7, "France": 73, "Russia": 1, "India": 14}
+# SMS-Man application ID pour TikTok
+SMSMAN_TIKTOK_APP_ID = 56  # TikTok/Douyin
+
+
+class SmsManClient:
+    """Client API sms-man.com pour reception SMS."""
+
+    BASE_URL = "https://api.sms-man.com/control"
+
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+
+    async def get_balance(self) -> float:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                f"{self.BASE_URL}/get-balance",
+                params={"token": self.api_key},
+                timeout=10,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                return float(data.get("balance", 0))
+            print(f"[SMSMAN] Balance error: {r.status_code} {r.text[:200]}")
+            return 0
+
+    async def buy_number(self, country_id: int = 10, application_id: int = 56) -> dict | None:
+        """Achete un numero sms-man. country_id=10=UK, application_id=56=TikTok."""
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                f"{self.BASE_URL}/get-number",
+                params={
+                    "token": self.api_key,
+                    "country_id": country_id,
+                    "application_id": application_id,
+                },
+                timeout=15,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                if "number" in data:
+                    phone = data["number"]
+                    if not phone.startswith("+"):
+                        phone = "+" + phone
+                    return {
+                        "order_id": str(data.get("request_id", "")),
+                        "phone": phone,
+                    }
+            print(f"[SMSMAN] Buy error: {r.status_code} {r.text[:200]}")
+            return None
+
+    async def wait_for_sms(self, order_id: str, max_wait: int = 180) -> str | None:
+        """Attend le SMS OTP. Retourne le code ou None."""
+        async with httpx.AsyncClient() as client:
+            for attempt in range(max_wait // 5):
+                await asyncio.sleep(5)
+                r = await client.get(
+                    f"{self.BASE_URL}/get-sms",
+                    params={
+                        "token": self.api_key,
+                        "request_id": order_id,
+                    },
+                    timeout=10,
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    sms_code = data.get("sms_code")
+                    if sms_code:
+                        return str(sms_code)
+                    error_code = data.get("error_code")
+                    if error_code == "wait_sms":
+                        print(f"  [SMSMAN] wait... ({attempt * 5}s/{max_wait}s)")
+                        continue
+                    if error_code in ("expired", "no_sms"):
+                        print(f"  [SMSMAN] {error_code}")
+                        return None
+                else:
+                    print(f"  [SMSMAN] check error: {r.status_code}")
+
+        return None
+
+    async def cancel_number(self, order_id: str):
+        async with httpx.AsyncClient() as client:
+            await client.get(
+                f"{self.BASE_URL}/set-status",
+                params={
+                    "token": self.api_key,
+                    "request_id": order_id,
+                    "status": "reject",
+                },
+                timeout=10,
+            )
+
+
+# ──────────────────────────────────────────────────────────
 # CapSolver Client
 # ──────────────────────────────────────────────────────────
 
@@ -320,49 +420,76 @@ async def create_tiktok_account(
     save_cookies_path: str | None = None,
     headless: bool = True,
 ) -> dict:
-    """Cree un compte TikTok — GrizzlySMS 'ds' UK puis Indonesie."""
+    """Cree un compte TikTok — SMS-Man UK puis Indonesie (fallback GrizzlySMS)."""
 
-    if not SMS_API_KEY:
-        return {"success": False, "error": "SMS_ACTIVATE_KEY not configured"}
+    # Phase 1 : SMS-Man (prioritaire)
+    if SMSMAN_API_KEY:
+        smsman = SmsManClient(SMSMAN_API_KEY)
+        balance = await smsman.get_balance()
+        print(f"[ACCOUNT] SMS-Man balance: {balance}")
 
-    sms_client = GrizzlySMSClient(SMS_API_KEY, SMS_API_URL)
-    balance = await sms_client.get_balance()
-    print(f"[ACCOUNT] GrizzlySMS balance: {balance} RUB")
+        if balance >= 0.5:
+            last_error = ""
+            for country_cfg in COUNTRY_CONFIGS[:2]:  # UK, Indonesia
+                cname = country_cfg["name"]
+                smsman_country_id = SMSMAN_COUNTRIES.get(cname, 10)
+                print(f"\n[ACCOUNT] === SMS-Man {cname} (id={smsman_country_id}) — pour {niche} ===")
 
-    if balance < 5:
-        return {"success": False, "error": f"GrizzlySMS balance trop faible: {balance} RUB"}
+                result = await _attempt_tiktok_signup(
+                    niche=niche,
+                    sms_client=smsman,
+                    sms_service="smsman",
+                    sms_country=str(smsman_country_id),
+                    phone_prefix=country_cfg["prefix"],
+                    country_search=country_cfg["search"],
+                    browser_locale=country_cfg["locale"],
+                    browser_tz=country_cfg["tz"],
+                    proxy=proxy,
+                    save_cookies_path=save_cookies_path,
+                    headless=headless,
+                )
 
-    last_error = ""
-    # Essayer UK d'abord, puis Indonesie
-    for country_cfg in COUNTRY_CONFIGS[:2]:  # UK, Indonesia
-        cname = country_cfg["name"]
-        print(f"\n[ACCOUNT] === GrizzlySMS 'ds' {cname} — pour {niche} ===")
+                if result["success"]:
+                    return result
 
-        result = await _attempt_tiktok_signup(
-            niche=niche,
-            sms_client=sms_client,
-            sms_service="ds",
-            sms_country=country_cfg["grizzly"],
-            phone_prefix=country_cfg["prefix"],
-            country_search=country_cfg["search"],
-            browser_locale=country_cfg["locale"],
-            browser_tz=country_cfg["tz"],
-            proxy=proxy,
-            save_cookies_path=save_cookies_path,
-            headless=headless,
-        )
+                last_error = result.get("error", "unknown")
+                print(f"[ACCOUNT] SMS-Man {cname} echoue: {last_error}")
 
-        if result["success"]:
-            return result
+                wait = 10 + random.randint(0, 10)
+                print(f"[ACCOUNT] Attente {wait}s...")
+                await asyncio.sleep(wait)
 
-        last_error = result.get("error", "unknown")
-        print(f"[ACCOUNT] {cname} echoue: {last_error}")
+            return {"success": False, "error": f"SMS-Man echoue UK+ID. Dernier: {last_error}"}
+        else:
+            print(f"[ACCOUNT] SMS-Man balance trop faible ({balance})")
 
-        wait = 10 + random.randint(0, 10)
-        print(f"[ACCOUNT] Attente {wait}s avant pays suivant...")
-        await asyncio.sleep(wait)
+    # Phase 2 : GrizzlySMS fallback
+    if SMS_API_KEY:
+        sms_client = GrizzlySMSClient(SMS_API_KEY, SMS_API_URL)
+        balance = await sms_client.get_balance()
+        print(f"[ACCOUNT] GrizzlySMS balance: {balance} RUB")
 
-    return {"success": False, "error": f"Echec UK + Indonesia. Dernier: {last_error}"}
+        if balance >= 5:
+            for country_cfg in COUNTRY_CONFIGS[:2]:
+                cname = country_cfg["name"]
+                print(f"\n[ACCOUNT] === GrizzlySMS 'ds' {cname} — pour {niche} ===")
+                result = await _attempt_tiktok_signup(
+                    niche=niche,
+                    sms_client=sms_client,
+                    sms_service="ds",
+                    sms_country=country_cfg["grizzly"],
+                    phone_prefix=country_cfg["prefix"],
+                    country_search=country_cfg["search"],
+                    browser_locale=country_cfg["locale"],
+                    browser_tz=country_cfg["tz"],
+                    proxy=proxy,
+                    save_cookies_path=save_cookies_path,
+                    headless=headless,
+                )
+                if result["success"]:
+                    return result
+
+    return {"success": False, "error": "Tous les fournisseurs SMS ont echoue"}
 
 
 async def _attempt_tiktok_signup(
@@ -383,10 +510,20 @@ async def _attempt_tiktok_signup(
     username = f"{username_base}{random.randint(10, 99)}"
     password = _generate_password()
 
-    provider_name = "5sim" if isinstance(sms_client, FiveSimClient) else "GrizzlySMS"
+    if isinstance(sms_client, SmsManClient):
+        provider_name = "SMS-Man"
+    elif isinstance(sms_client, FiveSimClient):
+        provider_name = "5sim"
+    else:
+        provider_name = "GrizzlySMS"
     print(f"[ACCOUNT] Achat numero via {provider_name} (service={sms_service}, country={sms_country})...")
 
-    if isinstance(sms_client, FiveSimClient):
+    if isinstance(sms_client, SmsManClient):
+        number_info = await sms_client.buy_number(
+            country_id=int(sms_country),
+            application_id=SMSMAN_TIKTOK_APP_ID,
+        )
+    elif isinstance(sms_client, FiveSimClient):
         number_info = await sms_client.buy_number(country=sms_country, product=sms_service)
     else:
         number_info = await sms_client.buy_number(service=sms_service, country=sms_country)

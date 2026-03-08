@@ -19,13 +19,14 @@ async def create_account(req: CreateAccountRequest, background_tasks: Background
     """Cree un nouveau compte TikTok pour une niche."""
     import os
 
-    # Validation upfront
+    # Validation upfront — au moins un fournisseur SMS doit etre configure
     sms_key = os.getenv("SMS_ACTIVATE_KEY", "")
+    smsman_key = os.getenv("SMSMAN_API_KEY", "")
     capsolver_key = os.getenv("CAPSOLVER_KEY", "")
 
     missing = []
-    if not sms_key:
-        missing.append("SMS_ACTIVATE_KEY")
+    if not sms_key and not smsman_key:
+        missing.append("SMSMAN_API_KEY ou SMS_ACTIVATE_KEY")
     if not capsolver_key:
         missing.append("CAPSOLVER_KEY")
 
