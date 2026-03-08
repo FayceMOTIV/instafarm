@@ -690,52 +690,82 @@ async def _attempt_tiktok_signup(
 
 async def _select_tiktok_country(page, country_label: str, phone_prefix: str):
     """Selectionne le pays dans le dropdown code pays TikTok."""
+    # Code prefix sans le +  (ex: "+44" -> "44")
+    prefix_num = phone_prefix.lstrip("+")
+
     try:
-        # Chercher le selecteur de code pays (dropdown a cote du champ telephone)
-        country_selector = None
+        # Debug : dump tous les elements cliquables autour du phone pour comprendre la page
+        nearby_html = await page.evaluate("""
+            () => {
+                const phoneInput = document.querySelector('input[name="mobile"]') || document.querySelector('input[type="tel"]');
+                if (!phoneInput) return 'NO_PHONE_INPUT';
+                const parent = phoneInput.closest('form') || phoneInput.parentElement?.parentElement?.parentElement;
+                if (!parent) return 'NO_PARENT';
+                // Chercher tous les divs/spans/selects cliquables dans le meme formulaire
+                const elements = parent.querySelectorAll('div[class*="code"], div[class*="prefix"], div[class*="select"], span[class*="code"], select, div[role="combobox"], div[role="listbox"], div[class*="country"], div[class*="area"]');
+                return Array.from(elements).slice(0, 10).map(el => ({
+                    tag: el.tagName,
+                    class: el.className?.toString()?.slice(0, 100),
+                    text: el.textContent?.trim()?.slice(0, 50),
+                    role: el.getAttribute('role'),
+                    id: el.id,
+                }));
+            }
+        """)
+        print(f"  [DEBUG] Phone area elements: {nearby_html}")
+
+        # Strategie 1 : Chercher un element contenant "+33" (le code par defaut FR) et cliquer dessus
+        country_btn = None
         for sel in [
-            '[data-e2e="area-code-selector"]',
-            '[class*="phone-code"]',
-            '[class*="area-code"]',
-            '[class*="country-code"]',
-            'div[class*="prefix"]',
-            # Le selecteur est souvent un div cliquable avec le code pays
-            f'div:has-text("{phone_prefix}")',
+            # TikTok mobile/desktop variants
+            'div[class*="code"]:has-text("+33")',
+            'span:has-text("+33")',
+            'div[role="combobox"]',
+            '[data-e2e="area-code"]',
+            '[class*="tiktok-phone-code"]',
+            '[class*="CountryCode"]',
+            '[class*="countryCode"]',
+            '[class*="areaCode"]',
         ]:
             try:
                 el = page.locator(sel).first
                 if await el.is_visible(timeout=1500):
-                    country_selector = el
-                    print(f"  Country selector found: {sel}")
+                    country_btn = el
+                    print(f"  Country btn found: {sel} -> '{await el.text_content()}'")
                     break
             except Exception:
                 continue
 
-        if not country_selector:
-            # Essayer de trouver via select element
-            select_el = page.locator('select').first
-            try:
-                if await select_el.is_visible(timeout=1000):
-                    # C'est un <select>, utiliser select_option
-                    await select_el.select_option(label=country_label)
-                    print(f"  Country selected via <select>: {country_label}")
-                    await asyncio.sleep(0.5)
-                    return
-            except Exception:
-                pass
-            print(f"  Country selector non trouve, le pays par defaut sera utilise")
+        if not country_btn:
+            print(f"  Country selector non trouve — tentative via JS")
+            # Strategie JS directe : modifier le data-attribute ou le state React
+            changed = await page.evaluate(f"""
+                () => {{
+                    // Chercher le span/div qui contient le code pays
+                    const all = document.querySelectorAll('span, div');
+                    for (const el of all) {{
+                        if (el.textContent.trim() === '+33' || el.textContent.trim() === 'FR +33') {{
+                            el.textContent = '+{prefix_num}';
+                            return 'changed_text';
+                        }}
+                    }}
+                    return 'not_found';
+                }}
+            """)
+            print(f"  JS country change: {changed}")
             return
 
         # Cliquer le dropdown
-        await country_selector.click(force=True)
+        await country_btn.click(force=True)
         await asyncio.sleep(1)
+        await page.screenshot(path="/tmp/tiktok_country_dropdown.png")
 
-        # Chercher un champ de recherche dans le dropdown
+        # Chercher un champ de recherche
         search_input = None
-        for sel in ['input[type="search"]', 'input[placeholder*="search" i]', 'input[placeholder*="Search" i]']:
+        for sel in ['input[type="search"]', 'input[placeholder*="earch" i]', 'input[type="text"]:visible']:
             try:
                 inp = page.locator(sel).first
-                if await inp.is_visible(timeout=1500):
+                if await inp.is_visible(timeout=2000):
                     search_input = inp
                     break
             except Exception:
@@ -743,33 +773,43 @@ async def _select_tiktok_country(page, country_label: str, phone_prefix: str):
 
         if search_input:
             await search_input.fill(country_label)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1)
 
-        # Cliquer sur le pays dans la liste
+        # Cliquer le pays dans la liste
         country_clicked = False
         for sel in [
-            f'text="{country_label}"',
             f'li:has-text("{country_label}")',
-            f'div:has-text("{country_label}")',
+            f'div[role="option"]:has-text("{country_label}")',
+            f'div:has-text("{phone_prefix}")',
             f'span:has-text("{phone_prefix}")',
+            f'text="{country_label}"',
         ]:
             try:
-                option = page.locator(sel).first
-                if await option.is_visible(timeout=2000):
-                    await option.click()
-                    country_clicked = True
-                    print(f"  Country selected: {country_label} ({phone_prefix})")
+                options = page.locator(sel)
+                count = await options.count()
+                for i in range(min(count, 3)):
+                    option = options.nth(i)
+                    if await option.is_visible(timeout=1000):
+                        await option.click()
+                        country_clicked = True
+                        print(f"  Country selected: {country_label} ({phone_prefix})")
+                        break
+                if country_clicked:
                     break
             except Exception:
                 continue
 
         if not country_clicked:
-            print(f"  WARN: Could not select {country_label}, using default")
+            print(f"  WARN: Could not click {country_label}, trying keyboard")
+            # Taper le nom du pays directement
+            await page.keyboard.type(country_label, delay=50)
+            await asyncio.sleep(0.5)
+            await page.keyboard.press("Enter")
 
         await asyncio.sleep(0.5)
 
     except Exception as e:
-        print(f"  Country selection error: {e}, continuing with default")
+        print(f"  Country selection error: {e}")
 
 
 async def _remove_overlays(page):
