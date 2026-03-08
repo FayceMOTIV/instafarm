@@ -1,0 +1,32 @@
+[Unit]
+Description=InstaFarm Scheduler (scraping + DMs)
+After=network.target redis-server.service instafarm-api.service
+Wants=redis-server.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/instafarm
+EnvironmentFile=/opt/instafarm/.env
+ExecStart=/usr/bin/python3 -m backend.scrapers.scheduler
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=instafarm-scheduler
+
+# Securite
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/instafarm
+PrivateTmp=true
+
+# Limits — Playwright peut consommer beaucoup de memoire
+LimitNOFILE=65535
+MemoryMax=2G
+TimeoutStartSec=60
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

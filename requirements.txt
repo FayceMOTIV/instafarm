@@ -48,6 +48,21 @@ aiohttp==3.10.5
 tenacity==9.0.0
 loguru==0.7.2
 
+# Firebase
+firebase-admin>=6.0.0
+
+# TikTok Pipeline
+Pillow>=10.0.0
+edge-tts>=6.1.0
+faster-whisper>=1.0.0
+
+# TikTok Account Creation
+tiktok-captcha-solver>=0.0.14
+playwright-stealth>=1.0.6
+
+# Timezone
+pytz>=2024.1
+
 # Tests
 pytest==8.3.3
 pytest-asyncio==0.24.0

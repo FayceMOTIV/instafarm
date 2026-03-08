@@ -97,6 +97,16 @@ const API = {
   getAccountStatus: (id) => API._fetch(`/api/accounts/${id}/status`),
   createAccount: () => API._fetch("/api/accounts/create", { method: "POST" }),
 
+  // === CATALOG (public — no auth) ===
+  getCatalogNiches: () => API._fetch("/api/catalog/niches"),
+  getCatalogNicheStats: (sector, city, dept) => {
+    const params = new URLSearchParams();
+    if (city) params.set("city", city);
+    if (dept) params.set("department", dept);
+    const qs = params.toString();
+    return API._fetch(`/api/catalog/niches/${sector}/stats${qs ? "?" + qs : ""}`);
+  },
+
   // === WEBHOOKS ===
   getWebhooks: () => API._fetch("/api/webhooks"),
   createWebhook: (data) => API._fetch("/api/webhooks", { method: "POST", body: JSON.stringify(data) }),

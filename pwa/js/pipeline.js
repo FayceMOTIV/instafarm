@@ -1,11 +1,12 @@
 /**
  * Pipeline Kanban — drag-and-drop mobile + desktop
+ * Dark Glassmorphism Aurora 2026
  */
 
 var _kanbanColumns = [
   { key: "dm_sent", emoji: "\uD83D\uDCAC", label: "New" },
   { key: "replied", emoji: "\uD83D\uDC41\uFE0F", label: "Suivi" },
-  { key: "interested", emoji: "\uD83D\uDD25", label: "Intéressé" },
+  { key: "interested", emoji: "\uD83D\uDD25", label: "Int\u00E9ress\u00E9" },
   { key: "rdv", emoji: "\uD83D\uDCC5", label: "RDV" },
   { key: "converted", emoji: "\u2705", label: "Converti" },
   { key: "lost", emoji: "\u274C", label: "Perdu" },
@@ -37,8 +38,11 @@ async function renderPipeline(container) {
 
 async function _loadKanban() {
   var promises = _kanbanColumns.map(function (col) {
-    return API.getProspects({ status: col.key, per_page: 50 })
-      .then(function (data) { return { key: col.key, items: data.items || data || [] }; })
+    return API.getProspects({ status: col.key, limit: 50 })
+      .then(function (data) {
+        var arr = Array.isArray(data) ? data : (data.prospects || data.items || []);
+        return { key: col.key, items: Array.isArray(arr) ? arr : [] };
+      })
       .catch(function () { return { key: col.key, items: [] }; });
   });
 
@@ -65,10 +69,14 @@ function _createCard(prospect) {
   card.dataset.prospectId = prospect.id;
   card.draggable = true;
 
+  var score = prospect.score || 0;
+  var scorePct = (score * 100).toFixed(0);
+  var scoreClass = score >= 0.7 ? "badge-success" : score >= 0.4 ? "badge-warm" : "";
+
   render(card, [
     '<div class="kanban-card-header">',
     '  <span class="kanban-card-name">@' + esc(prospect.username || "?") + "</span>",
-    "  " + scoreBadge(prospect.score),
+    '  <span class="badge ' + scoreClass + '">' + esc(scorePct) + "</span>",
     "</div>",
     '<div class="kanban-card-info">',
     '  <span class="text-secondary">' + esc(prospect.full_name || "") + "</span>",
@@ -78,7 +86,7 @@ function _createCard(prospect) {
 
   // Tap to open conversation
   card.addEventListener("click", function (e) {
-    if (_dragData) return; // Don't navigate during drag
+    if (_dragData) return;
     navigateTo("#/conversation/" + prospect.id);
   });
 
@@ -173,19 +181,17 @@ async function _moveProspect(prospectId, newStatus, card, column) {
   // Optimistic UI: move card
   var cardsContainer = column.querySelector(".kanban-cards");
   if (cardsContainer && card) {
-    // Update counts
     var oldCol = card.parentElement;
     cardsContainer.appendChild(card);
-
     _updateColCount(oldCol);
     _updateColCount(cardsContainer);
   }
 
   try {
     await API.updateProspect(prospectId, { status: newStatus });
-    showToast("Prospect déplacé vers " + newStatus, "success");
+    showToast("Prospect d\u00E9plac\u00E9 vers " + newStatus, "success");
   } catch (e) {
-    showToast("Erreur déplacement", "error");
+    showToast("Erreur d\u00E9placement", "error");
     _loadKanban(); // Revert
   }
 }

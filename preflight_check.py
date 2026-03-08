@@ -71,8 +71,8 @@ header("1/9 — Variables d'environnement")
 REQUIRED_VARS = [
     ("GROQ_API_KEY", "Groq — génération DMs IA", True),
     ("APIFY_TOKEN", "Apify — scraping Instagram", True),
-    ("SMS_ACTIVATE_KEY", "SMS-activate — création comptes", True),
-    ("TWOCAPTCHA_KEY", "2captcha — création comptes", True),
+    ("SMS_ACTIVATE_KEY", "GrizzlySMS — création comptes", True),
+    ("CAPSOLVER_KEY", "CapSolver — résolution captcha", True),
     ("ADMIN_TOKEN", "Token Super Admin", True),
     ("SECRET_KEY", "Clé secrète app", True),
     ("VAPID_PUBLIC_KEY", "Push notifications", False),
@@ -260,47 +260,79 @@ async def check_apify():
 asyncio.run(check_apify())
 
 # ============================================================
-# CHECK 6 — SMS-ACTIVATE
+# CHECK 6 — GRIZZLYSMS + CAPSOLVER
 # ============================================================
-header("6/9 — SMS-Activate (solde compte)")
+header("6/9 — GrizzlySMS (solde) + CapSolver (vraie call)")
 
-async def check_sms_activate():
+async def check_grizzlysms():
     try:
         import httpx
         key = os.environ.get("SMS_ACTIVATE_KEY", "")
         if not key:
             fail("SMS_ACTIVATE_KEY manquant")
             return
-        
+
+        api_url = os.environ.get("SMS_API_URL", "https://api.grizzlysms.com/stubs/handler_api.php")
+
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
-                f"https://api.sms-activate.org/stubs/handler_api.php",
+                api_url,
                 params={"api_key": key, "action": "getBalance"}
             )
-        
+
         text = resp.text
         if text.startswith("ACCESS_BALANCE:"):
             balance = float(text.split(":")[1])
-            check(balance > 0, f"SMS-Activate solde: {balance}₽", "SMS-Activate solde à 0 — recharge le compte")
-            
-            # Estimation : 1 compte IG ≈ 15-25₽ selon disponibilité
+            check(balance > 0, f"GrizzlySMS solde: {balance}₽", "GrizzlySMS solde à 0 — recharge le compte")
+
             est_accounts = int(balance / 20)
             info(f"Estimation: ~{est_accounts} comptes créables avec ce solde")
-            
+
             if balance < 100:
                 warn(f"Solde faible ({balance}₽). Recommandé: minimum 500₽ pour commencer.")
         elif text == "BAD_KEY":
-            fail("SMS-Activate: Clé API invalide")
+            fail("GrizzlySMS: Clé API invalide")
             results["failed"] += 1
         else:
-            fail(f"SMS-Activate réponse inattendue: {text}")
+            fail(f"GrizzlySMS réponse inattendue: {text}")
             results["failed"] += 1
-            
+
     except Exception as e:
-        fail(f"SMS-Activate erreur: {e}")
+        fail(f"GrizzlySMS erreur: {e}")
         results["failed"] += 1
 
-asyncio.run(check_sms_activate())
+asyncio.run(check_grizzlysms())
+
+async def check_capsolver():
+    try:
+        import httpx
+        key = os.environ.get("CAPSOLVER_KEY", "")
+        if not key:
+            fail("CAPSOLVER_KEY manquant")
+            return
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                "https://api.capsolver.com/getBalance",
+                json={"clientKey": key}
+            )
+
+        data = resp.json()
+        if data.get("errorId", 1) == 0:
+            balance = data.get("balance", 0)
+            check(True, f"CapSolver connecté — solde: ${balance:.2f}", "")
+            if balance < 1:
+                warn(f"CapSolver solde faible (${balance:.2f}). Recommandé: minimum $5.")
+        else:
+            error_msg = data.get("errorDescription", "erreur inconnue")
+            fail(f"CapSolver: {error_msg}")
+            results["failed"] += 1
+
+    except Exception as e:
+        fail(f"CapSolver erreur: {e}")
+        results["failed"] += 1
+
+asyncio.run(check_capsolver())
 
 # ============================================================
 # CHECK 7 — PROXIES

@@ -1,5 +1,6 @@
 /**
  * Inbox unifiée + vue conversation
+ * Dark Glassmorphism Aurora 2026
  */
 
 var _inboxPage = 1;
@@ -29,6 +30,9 @@ async function renderInbox(container) {
     '<div id="inbox-list" class="inbox-list"></div>',
     '<div id="inbox-loader" class="loading" style="display:none"><div class="spinner"></div></div>',
   ].join("\n"));
+
+  // Show skeleton while loading
+  showSkeleton(document.getElementById("inbox-list"), 4);
 
   // Events
   document.getElementById("inbox-search").addEventListener("input", _debounce(function (e) {
@@ -77,7 +81,7 @@ async function _loadInbox(append) {
     var items = data.items || data || [];
 
     if (!items.length && !append) {
-      render(list, '<div class="empty-state"><p>Aucune conversation</p></div>');
+      render(list, '<div class="empty-state"><div class="icon">\uD83D\uDCAC</div><p>Aucune conversation</p></div>');
       if (loader) loader.style.display = "none";
       return;
     }
@@ -87,11 +91,18 @@ async function _loadInbox(append) {
       el.className = "inbox-item" + (item.unread ? " unread" : "");
       el.href = "#/conversation/" + (item.prospect_id || item.id);
 
+      var username = item.username || item.full_name || "?";
+      var color = avatarColor(username);
+      var initials = avatarInitials(username);
+
+      var scorePct = ((item.score || 0) * 100).toFixed(0);
+      var scoreClass = (item.score || 0) >= 0.8 ? "score-hot" : (item.score || 0) >= 0.5 ? "score-warm" : "score-cold";
+
       render(el, [
-        '<div class="inbox-avatar">' + esc(item.niche_emoji || "\uD83D\uDC64") + "</div>",
+        '<div class="inbox-avatar" style="background:' + color + '">' + esc(initials) + "</div>",
         '<div class="inbox-info">',
         '  <div class="inbox-header-row">',
-        '    <span class="inbox-name">' + esc(item.username || item.full_name || "?") + "</span>",
+        '    <span class="inbox-name">' + esc(username) + "</span>",
         "    " + scoreBadge(item.score),
         "  </div>",
         '  <div class="inbox-preview">' + esc(_truncate(item.last_message || item.content || "", 50)) + "</div>",
@@ -128,7 +139,7 @@ async function renderConversation(container, params) {
     "</div>",
     '<div class="conv-actions" id="conv-actions">',
     '  <div class="conv-input-row">',
-    '    <input type="text" id="conv-input" class="input" placeholder="Écrire un message...">',
+    '    <input type="text" id="conv-input" class="input" placeholder="\u00C9crire un message...">',
     '    <button class="btn btn-primary" id="conv-send">\u27A4</button>',
     "  </div>",
     '  <div class="conv-quick-actions">',
@@ -151,12 +162,17 @@ async function renderConversation(container, params) {
 
     // Update header
     var header = document.getElementById("conv-header");
+    var username = prospect.username || "?";
+    var color = avatarColor(username);
+    var initials = avatarInitials(username);
+
     render(header, [
       '<button class="btn btn-ghost" id="conv-back-2">\u2190</button>',
+      '<div class="inbox-avatar" style="background:' + color + ';width:32px;height:32px;font-size:13px">' + esc(initials) + '</div>',
       '<div class="conv-title">',
-      "  <strong>@" + esc(prospect.username || "?") + "</strong> " + scoreBadge(prospect.score),
+      "  <strong>@" + esc(username) + "</strong> " + scoreBadge(prospect.score),
       "</div>",
-      '<a class="btn btn-ghost" href="https://instagram.com/' + esc(prospect.username) + '" target="_blank">\uD83C\uDFAF IG</a>',
+      '<a class="btn btn-ghost btn-sm" href="https://instagram.com/' + esc(username) + '" target="_blank">\uD83C\uDFAF</a>',
     ].join("\n"));
     document.getElementById("conv-back-2").addEventListener("click", function () {
       navigateTo("#/inbox");
@@ -207,7 +223,7 @@ async function renderConversation(container, params) {
     document.getElementById("conv-suggest").addEventListener("click", async function () {
       var btn = this;
       btn.disabled = true;
-      btn.textContent = "\u2728 Génération...";
+      btn.textContent = "\u2728 G\u00E9n\u00E9ration...";
       try {
         var lastMsg = messages.length > 0 ? messages[messages.length - 1].content : "";
         var result = await API.suggestResponse(prospectId, lastMsg);
@@ -236,7 +252,7 @@ async function renderConversation(container, params) {
       if (!confirm("Blacklister ce prospect ?")) return;
       try {
         await API.blacklistProspect(prospectId);
-        showToast("Prospect blacklisté", "warning");
+        showToast("Prospect blacklist\u00E9", "warning");
         navigateTo("#/inbox");
       } catch (e) {
         showToast(e.message, "error");
@@ -269,7 +285,7 @@ async function _sendMessage(prospectId, inputEl, msgContainer) {
 
   try {
     await API.sendMessage(prospectId, content);
-    md.textContent = "à l'instant";
+    md.textContent = "\u00E0 l'instant";
   } catch (e) {
     md.textContent = "Erreur";
     bubble.classList.add("bubble-error");

@@ -1,5 +1,6 @@
 /**
- * Dashboard Home — metrics + niche selector + chart 7j
+ * Dashboard Home — Hero + metrics glassmorphiques + chart 7j
+ * Dark Glassmorphism Aurora 2026
  */
 
 var _dashboardNiches = [];
@@ -9,16 +10,25 @@ async function renderDashboard(container) {
   var now = new Date();
   var hh = String(now.getHours()).padStart(2, "0");
   var mm = String(now.getMinutes()).padStart(2, "0");
-  var greeting = now.getHours() < 12 ? "\u2600\uFE0F Bonjour" : now.getHours() < 18 ? "\u2600\uFE0F Bon après-midi" : "\uD83C\uDF19 Bonsoir";
 
-  var data, niches;
+  var data, niches, raw;
   try {
     var results = await Promise.all([
       API.getDashboard("last_7_days"),
       API.getNiches(),
     ]);
-    data = results[0];
-    niches = results[1] || [];
+    raw = results[0];
+    var g = raw.global || {};
+    data = {
+      dms_sent: g.dms_sent || 0,
+      responses: g.responses || 0,
+      response_rate: g.response_rate_pct || 0,
+      hot_prospects: (raw.roi || {}).hot_prospects || 0,
+      pipeline_value: (raw.roi || {}).estimated_pipeline_eur || 0,
+      daily_stats: raw.daily_stats || [],
+    };
+    var nichesRaw = results[1];
+    niches = Array.isArray(nichesRaw) ? nichesRaw : (nichesRaw.niches || []);
     _dashboardNiches = niches;
   } catch (e) {
     data = { dms_sent: 0, responses: 0, response_rate: 0, hot_prospects: 0, pipeline_value: 0, daily_stats: [] };
@@ -36,41 +46,73 @@ async function renderDashboard(container) {
     : { dms: 0, responses: 0 };
 
   render(container, [
-    '<div class="page-header">',
-    "  <h1>" + greeting + " !</h1>",
-    '  <p class="text-secondary">' + hh + ":" + mm + " — Hier: " + esc(yesterday.dms) + " DMs, " + esc(yesterday.responses) + " réponses</p>",
-    "</div>",
-    "",
+    // Hero section
+    '<div class="hero-section">',
+    '  <div class="hero-title">',
+    '    <span class="gradient-text">InstaFarm</span> War Machine',
+    '  </div>',
+    '  <div class="hero-subtitle" id="hero-sub"></div>',
+    '</div>',
+
+    // Metrics grid
     '<div class="metrics-grid">',
     '  <div class="metric-card">',
-    '    <div class="metric-value" id="m-dms">' + formatNum(data.dms_sent) + "</div>",
-    '    <div class="metric-label">DMs envoyés</div>',
+    '    <div class="metric-value accent" id="m-dms">0</div>',
+    '    <div class="metric-label">DMs envoy\u00E9s</div>',
     "  </div>",
     '  <div class="metric-card">',
-    '    <div class="metric-value" id="m-rate">' + formatPct(data.response_rate) + "</div>",
-    '    <div class="metric-label">Taux réponse</div>',
+    '    <div class="metric-value success" id="m-rate">0%</div>',
+    '    <div class="metric-label">Taux r\u00E9ponse</div>',
     "  </div>",
     '  <div class="metric-card">',
-    '    <div class="metric-value hot" id="m-hot">' + formatNum(data.hot_prospects) + ' \uD83D\uDD25</div>',
-    '    <div class="metric-label">Prospects chauds</div>',
+    '    <div class="metric-value hot" id="m-hot">0</div>',
+    '    <div class="metric-label">Prospects \uD83D\uDD25</div>',
     "  </div>",
     '  <div class="metric-card">',
-    '    <div class="metric-value" id="m-pipeline">' + formatNum(data.pipeline_value) + " \u20AC</div>",
+    '    <div class="metric-value" id="m-pipeline">0 \u20AC</div>',
     '    <div class="metric-label">Pipeline</div>',
     "  </div>",
     "</div>",
-    "",
+
+    // Niche selector
     '<div class="niche-selector" id="niche-bar">' + nicheChips + "</div>",
-    "",
+
+    // Chart
     '<div class="card">',
     '  <h3>7 derniers jours</h3>',
-    '  <canvas id="chart-7d" width="360" height="180"></canvas>',
+    '  <canvas id="chart-7d" width="360" height="200" style="width:100%;height:200px"></canvas>',
     "</div>",
-    "",
-    '<div style="padding:0 1rem 1rem">',
-    '  <button class="btn btn-primary btn-full" id="btn-hot">Voir prospects chauds \uD83D\uDD25</button>',
+
+    // CTA
+    '<div style="padding:4px 0 8px">',
+    '  <button class="btn btn-primary btn-full btn-glow" id="btn-hot">\uD83D\uDD25 Voir prospects chauds</button>',
     "</div>",
   ].join("\n"));
+
+  // Typewriter hero subtitle
+  var heroSub = document.getElementById("hero-sub");
+  var subtitleText = hh + ":" + mm + " \u2022 Hier: " + (yesterday.dms || 0) + " DMs, " + (yesterday.responses || 0) + " r\u00E9ponses";
+  typeWriter(heroSub, subtitleText, 30);
+
+  // Animate count up on metrics
+  animateCountUp(document.getElementById("m-dms"), data.dms_sent, 1000);
+  animateCountUp(document.getElementById("m-rate"), data.response_rate, 1000);
+  animateCountUp(document.getElementById("m-hot"), data.hot_prospects, 800);
+
+  var mPipe = document.getElementById("m-pipeline");
+  if (mPipe) {
+    var pipeTarget = data.pipeline_value;
+    var pipeStart = 0;
+    var pipeStartTime = null;
+    function animPipe(ts) {
+      if (!pipeStartTime) pipeStartTime = ts;
+      var prog = Math.min((ts - pipeStartTime) / 1200, 1);
+      var eased = 1 - Math.pow(1 - prog, 3);
+      mPipe.textContent = Math.round(pipeStart + (pipeTarget - pipeStart) * eased).toLocaleString("fr-FR") + " \u20AC";
+      if (prog < 1) requestAnimationFrame(animPipe);
+    }
+    requestAnimationFrame(animPipe);
+  }
 
   // Draw chart
   _drawChart(data.daily_stats || []);
@@ -93,15 +135,22 @@ async function renderDashboard(container) {
 
 async function _refreshDashboard(container) {
   try {
-    var period = "last_7_days";
-    var data = await API.getDashboard(period);
+    var raw = await API.getDashboard("last_7_days");
+    var g = raw.global || {};
+    var data = {
+      dms_sent: g.dms_sent || 0,
+      response_rate: g.response_rate_pct || 0,
+      hot_prospects: (raw.roi || {}).hot_prospects || 0,
+      pipeline_value: (raw.roi || {}).estimated_pipeline_eur || 0,
+      daily_stats: raw.daily_stats || [],
+    };
     var mDms = document.getElementById("m-dms");
     var mRate = document.getElementById("m-rate");
     var mHot = document.getElementById("m-hot");
     var mPipe = document.getElementById("m-pipeline");
-    if (mDms) mDms.textContent = formatNum(data.dms_sent);
-    if (mRate) mRate.textContent = formatPct(data.response_rate);
-    if (mHot) mHot.textContent = formatNum(data.hot_prospects) + " \uD83D\uDD25";
+    if (mDms) animateCountUp(mDms, data.dms_sent, 600);
+    if (mRate) animateCountUp(mRate, data.response_rate, 600);
+    if (mHot) animateCountUp(mHot, data.hot_prospects, 600);
     if (mPipe) mPipe.textContent = formatNum(data.pipeline_value) + " \u20AC";
     _drawChart(data.daily_stats || []);
   } catch (e) {
@@ -112,18 +161,26 @@ async function _refreshDashboard(container) {
 function _drawChart(dailyStats) {
   var canvas = document.getElementById("chart-7d");
   if (!canvas) return;
+
+  // Handle high-DPI displays
+  var dpr = window.devicePixelRatio || 1;
+  var rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
   var ctx = canvas.getContext("2d");
-  var w = canvas.width;
-  var h = canvas.height;
+  ctx.scale(dpr, dpr);
+
+  var w = rect.width;
+  var h = rect.height;
   var pad = 40;
 
   ctx.clearRect(0, 0, w, h);
 
   if (!dailyStats.length) {
-    ctx.fillStyle = "#94a3b8";
-    ctx.font = "14px Inter, sans-serif";
+    ctx.fillStyle = "#8b8fa8";
+    ctx.font = "14px 'DM Sans', sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText("Pas encore de données", w / 2, h / 2);
+    ctx.fillText("Pas encore de donn\u00E9es", w / 2, h / 2);
     return;
   }
 
@@ -136,7 +193,7 @@ function _drawChart(dailyStats) {
   var stepX = (w - pad * 2) / Math.max(dailyStats.length - 1, 1);
 
   // Grid lines
-  ctx.strokeStyle = "rgba(148,163,184,0.15)";
+  ctx.strokeStyle = "rgba(139,143,168,0.08)";
   ctx.lineWidth = 1;
   for (var g = 0; g <= 4; g++) {
     var gy = pad + ((h - pad * 2) * g) / 4;
@@ -146,15 +203,18 @@ function _drawChart(dailyStats) {
     ctx.stroke();
   }
 
+  // DMs area fill (violet gradient)
+  _drawAreaFill(ctx, dailyStats, "dms", maxVal, w, h, pad, stepX, "rgba(124, 58, 237, 0.15)", "rgba(124, 58, 237, 0.02)");
+
   // DMs line (violet)
-  _drawLine(ctx, dailyStats, "dms", maxVal, w, h, pad, stepX, "#7c3aed", 2);
+  _drawLine(ctx, dailyStats, "dms", maxVal, w, h, pad, stepX, "#a855f7", 2.5);
 
   // Responses line (green)
-  _drawLine(ctx, dailyStats, "responses", maxVal, w, h, pad, stepX, "#10b981", 2);
+  _drawLine(ctx, dailyStats, "responses", maxVal, w, h, pad, stepX, "#22c55e", 2);
 
   // Labels
-  ctx.fillStyle = "#94a3b8";
-  ctx.font = "11px Inter, sans-serif";
+  ctx.fillStyle = "#8b8fa8";
+  ctx.font = "11px 'DM Sans', sans-serif";
   ctx.textAlign = "center";
   dailyStats.forEach(function (d, i) {
     var x = pad + i * stepX;
@@ -163,17 +223,39 @@ function _drawChart(dailyStats) {
   });
 
   // Legend
-  ctx.fillStyle = "#7c3aed";
-  ctx.fillRect(pad, 8, 12, 3);
-  ctx.fillStyle = "#f8fafc";
-  ctx.font = "11px Inter, sans-serif";
+  ctx.fillStyle = "#a855f7";
+  ctx.fillRect(pad, 6, 12, 4);
+  ctx.fillStyle = "#f0f0f8";
+  ctx.font = "11px 'DM Sans', sans-serif";
   ctx.textAlign = "left";
   ctx.fillText("DMs", pad + 16, 12);
 
-  ctx.fillStyle = "#10b981";
-  ctx.fillRect(pad + 60, 8, 12, 3);
-  ctx.fillStyle = "#f8fafc";
-  ctx.fillText("Réponses", pad + 76, 12);
+  ctx.fillStyle = "#22c55e";
+  ctx.fillRect(pad + 55, 6, 12, 4);
+  ctx.fillStyle = "#f0f0f8";
+  ctx.fillText("R\u00E9ponses", pad + 71, 12);
+}
+
+function _drawAreaFill(ctx, data, key, maxVal, w, h, pad, stepX, colorTop, colorBottom) {
+  var gradient = ctx.createLinearGradient(0, pad, 0, h - pad);
+  gradient.addColorStop(0, colorTop);
+  gradient.addColorStop(1, colorBottom);
+
+  ctx.fillStyle = gradient;
+  ctx.beginPath();
+  ctx.moveTo(pad, h - pad);
+
+  data.forEach(function (d, i) {
+    var x = pad + i * stepX;
+    var val = d[key] || 0;
+    var y = h - pad - ((val / maxVal) * (h - pad * 2));
+    if (i === 0) ctx.lineTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+
+  ctx.lineTo(pad + (data.length - 1) * stepX, h - pad);
+  ctx.closePath();
+  ctx.fill();
 }
 
 function _drawLine(ctx, data, key, maxVal, w, h, pad, stepX, color, width) {
@@ -191,12 +273,20 @@ function _drawLine(ctx, data, key, maxVal, w, h, pad, stepX, color, width) {
   });
   ctx.stroke();
 
-  // Dots
-  ctx.fillStyle = color;
+  // Glow dots
   data.forEach(function (d, i) {
     var x = pad + i * stepX;
     var val = d[key] || 0;
     var y = h - pad - ((val / maxVal) * (h - pad * 2));
+
+    // Glow
+    ctx.fillStyle = color.replace(")", ", 0.3)").replace("rgb", "rgba");
+    ctx.beginPath();
+    ctx.arc(x, y, 6, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Dot
+    ctx.fillStyle = color;
     ctx.beginPath();
     ctx.arc(x, y, 3, 0, Math.PI * 2);
     ctx.fill();

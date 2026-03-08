@@ -14,11 +14,12 @@ from starlette.responses import JSONResponse
 from backend.database import get_db
 from backend.models import Tenant
 
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "admin_secret_token_change_me")
+def _get_admin_token() -> str:
+    return os.getenv("ADMIN_TOKEN", "admin_secret_token_change_me")
 
 # Routes publiques (pas besoin d'auth)
 PUBLIC_PATHS = {"/health", "/", "/docs", "/openapi.json", "/redoc"}
-PUBLIC_PREFIXES = ("/pwa", "/js", "/css")
+PUBLIC_PREFIXES = ("/pwa", "/js", "/css", "/api/catalog")
 
 # Rate limiting config
 RATE_LIMIT_WINDOW = 60  # secondes
@@ -72,7 +73,7 @@ class TenantMiddleware(BaseHTTPMiddleware):
         if path.startswith("/admin"):
             auth_header = request.headers.get("authorization", "")
             token = auth_header.replace("Bearer ", "")
-            if token != ADMIN_TOKEN:
+            if token != _get_admin_token():
                 return JSONResponse({"error": "Admin token invalide"}, status_code=403)
             return await call_next(request)
 
@@ -126,5 +127,5 @@ async def verify_admin_token(
         raise HTTPException(status_code=403, detail="Admin token requis")
 
     token = authorization.replace("Bearer ", "")
-    if token != ADMIN_TOKEN:
+    if token != _get_admin_token():
         raise HTTPException(status_code=403, detail="Admin token invalide")

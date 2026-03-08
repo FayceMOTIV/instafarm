@@ -2,6 +2,10 @@
 .env
 .env.local
 .env.production
+*credentials*.json
+*serviceAccount*.json
+*.pem
+*.key
 
 # Database
 *.db
@@ -45,6 +49,23 @@ htmlcov/
 
 # Node (PWA)
 node_modules/
+
+# Debug scripts
+debug_*.py
+
+# Debug screenshots
+debug_*.png
+dm_*.png
+dm[0-9]*.png
+screenshot_*.png
+ss_*.png
+consent_*.png
+login_*.png
+familys*.png
+
+# Temp files
+-w
+5
 
 # Claude
 .claude/

@@ -120,6 +120,16 @@ class IgAccount(Base):
     personality: Mapped[str] = mapped_column(Text, default="{}")  # JSON
     # Driver mode
     ig_driver: Mapped[str] = mapped_column(String, default="instagrapi")
+    # Pool role
+    role: Mapped[str] = mapped_column(String, default="standby")  # active | standby | resting | banned
+    # Bio management
+    current_bio: Mapped[str | None] = mapped_column(Text, nullable=True)
+    current_niche: Mapped[str | None] = mapped_column(String, nullable=True)
+    bio_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cookies_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Extra identifiers
+    email_password: Mapped[str | None] = mapped_column(String, nullable=True)
+    user_id_ig: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     # Relations
@@ -295,3 +305,31 @@ class SystemLog(Base):
 
     # Relations
     tenant: Mapped["Tenant | None"] = relationship(back_populates="system_logs")
+
+
+# ===== PIPELINE RUNS =====
+class PipelineRun(Base):
+    __tablename__ = "pipeline_runs"
+    __table_args__ = (
+        Index("idx_pipeline_runs_tenant_sector", "tenant_id", "sector"),
+        Index("idx_pipeline_runs_ran_at", "ran_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(Integer, ForeignKey("tenants.id"), nullable=False)
+    niche_id: Mapped[int] = mapped_column(Integer, ForeignKey("niches.id"), nullable=False)
+    sector: Mapped[str] = mapped_column(String, nullable=False)
+    city: Mapped[str] = mapped_column(String, default="")
+    # Stats du run
+    collected: Mapped[int] = mapped_column(Integer, default=0)
+    instagram_found: Mapped[int] = mapped_column(Integer, default=0)
+    validated: Mapped[int] = mapped_column(Integer, default=0)
+    queued: Mapped[int] = mapped_column(Integer, default=0)
+    # Metadata
+    duration_sec: Mapped[float] = mapped_column(Float, default=0.0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ran_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    # Relations
+    tenant: Mapped["Tenant"] = relationship()
+    niche: Mapped["Niche"] = relationship()
