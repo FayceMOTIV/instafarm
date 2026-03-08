@@ -61,8 +61,8 @@ class GrizzlySMSClient:
             print(f"[SMS] Balance error: {text}")
             return 0
 
-    async def buy_number(self, service: str = "lf", country: str = "12") -> dict | None:
-        """Achete un numero. service='lf' = TikTok, country='12' = France (GrizzlySMS)."""
+    async def buy_number(self, service: str = "lf", country: str = "78") -> dict | None:
+        """Achete un numero. service='lf' = TikTok, country='78' = France (GrizzlySMS)."""
         async with httpx.AsyncClient() as client:
             r = await client.get(self.api_url, params={
                 "api_key": self.api_key,
@@ -255,7 +255,7 @@ async def create_tiktok_account(
     password = _generate_password()
 
     print("[ACCOUNT] Achat numero TikTok FR...")
-    number_info = await sms_client.buy_number(service="lf", country="12")
+    number_info = await sms_client.buy_number(service="lf", country="78")
     if not number_info:
         return {"success": False, "error": "Echec achat numero GrizzlySMS"}
 
@@ -296,64 +296,130 @@ async def create_tiktok_account(
         try:
             # 1. Page inscription
             print("[ACCOUNT] Navigation signup...")
-            await page.goto("https://www.tiktok.com/signup", wait_until="networkidle", timeout=30000)
-            await asyncio.sleep(random.uniform(1.5, 3))
+            await page.goto(
+                "https://www.tiktok.com/signup/phone-or-email/phone",
+                wait_until="networkidle",
+                timeout=30000,
+            )
+            await asyncio.sleep(random.uniform(2, 4))
+            await page.screenshot(path="/tmp/tiktok_step1_loaded.png")
+            print(f"  Step 1 URL: {page.url}")
 
-            # 2. Selectionner telephone
-            try:
-                phone_btn = page.locator('text="Use phone or email"').first
-                if await phone_btn.is_visible(timeout=3000):
-                    await phone_btn.click()
-                    await asyncio.sleep(1)
-            except Exception:
-                pass
+            # 2. Accepter cookies/consent si present
+            for consent_sel in [
+                'button:has-text("Accept all")',
+                'button:has-text("Accepter")',
+                'button:has-text("Allow")',
+                '[data-testid="cookie-banner-accept"]',
+            ]:
+                try:
+                    btn = page.locator(consent_sel).first
+                    if await btn.is_visible(timeout=2000):
+                        await btn.click()
+                        await asyncio.sleep(1)
+                        break
+                except Exception:
+                    continue
 
-            try:
-                phone_tab = page.locator('[data-e2e="signup-phone-tab"]').first
-                if not await phone_tab.is_visible(timeout=2000):
-                    phone_tab = page.locator('text="Phone"').first
-                if await phone_tab.is_visible(timeout=2000):
-                    await phone_tab.click()
-                    await asyncio.sleep(1)
-            except Exception:
-                pass
+            # 3. Date de naissance (selectors multiples)
+            print("[ACCOUNT] Birthday...")
+            birthday_done = False
+            # Methode 1: data-e2e selectors
+            for month_sel in ['[data-e2e="birthday-month"]', 'select[name="month"]', 'select:nth-of-type(1)']:
+                try:
+                    month = page.locator(month_sel).first
+                    if await month.is_visible(timeout=2000):
+                        await month.select_option(str(random.randint(1, 12)))
+                        await asyncio.sleep(0.3)
+                        for day_sel in ['[data-e2e="birthday-day"]', 'select[name="day"]', 'select:nth-of-type(2)']:
+                            try:
+                                day = page.locator(day_sel).first
+                                if await day.is_visible(timeout=1000):
+                                    await day.select_option(str(random.randint(1, 28)))
+                                    break
+                            except Exception:
+                                continue
+                        await asyncio.sleep(0.3)
+                        for year_sel in ['[data-e2e="birthday-year"]', 'select[name="year"]', 'select:nth-of-type(3)']:
+                            try:
+                                year = page.locator(year_sel).first
+                                if await year.is_visible(timeout=1000):
+                                    await year.select_option(str(random.randint(1985, 1998)))
+                                    break
+                            except Exception:
+                                continue
+                        await asyncio.sleep(0.5)
+                        # Cliquer Next/Continue
+                        for next_sel in [
+                            '[data-e2e="birthday-continue"]',
+                            'button[type="submit"]',
+                            'button:has-text("Next")',
+                            'button:has-text("Suivant")',
+                        ]:
+                            try:
+                                nbtn = page.locator(next_sel).first
+                                if await nbtn.is_visible(timeout=2000):
+                                    await nbtn.click()
+                                    birthday_done = True
+                                    break
+                            except Exception:
+                                continue
+                        break
+                except Exception:
+                    continue
 
-            # 3. Date de naissance
-            try:
-                month_select = page.locator('[data-e2e="birthday-month"]').first
-                if await month_select.is_visible(timeout=3000):
-                    await month_select.select_option(str(random.randint(1, 12)))
-                    await asyncio.sleep(0.5)
-                    day_select = page.locator('[data-e2e="birthday-day"]').first
-                    await day_select.select_option(str(random.randint(1, 28)))
-                    await asyncio.sleep(0.5)
-                    year_select = page.locator('[data-e2e="birthday-year"]').first
-                    await year_select.select_option(str(random.randint(1985, 1998)))
-                    await asyncio.sleep(0.5)
-                    next_btn = page.locator('[data-e2e="birthday-continue"]').first
-                    if await next_btn.is_visible(timeout=2000):
-                        await next_btn.click()
-                        await asyncio.sleep(1.5)
-            except Exception as e:
-                print(f"  Birthday step: {e}")
+            if birthday_done:
+                await asyncio.sleep(1.5)
+            await page.screenshot(path="/tmp/tiktok_step3_birthday.png")
 
-            # 4. Numero de telephone
+            # 4. Numero de telephone (selectors robustes)
             print(f"[ACCOUNT] Saisie numero {phone}...")
-            try:
-                phone_input = page.locator('[data-e2e="signup-phone-input"]').first
-                if not await phone_input.is_visible(timeout=3000):
-                    phone_input = page.locator('input[placeholder*="phone" i]').first
+            phone_input = None
+            for sel in [
+                '[data-e2e="signup-phone-input"]',
+                'input[name="mobile"]',
+                'input[placeholder*="phone" i]',
+                'input[placeholder*="numero" i]',
+                'input[placeholder*="numéro" i]',
+                'input[type="tel"]',
+                'input[name="phoneNumber"]',
+            ]:
+                try:
+                    el = page.locator(sel).first
+                    if await el.is_visible(timeout=2000):
+                        phone_input = el
+                        print(f"  Phone input found: {sel}")
+                        break
+                except Exception:
+                    continue
 
-                phone_local = phone.replace("+33", "0")
-                await phone_input.click()
-                await asyncio.sleep(0.5)
-                await _type_like_human(phone_input, phone_local)
-                await asyncio.sleep(1)
-            except Exception as e:
-                await page.screenshot(path=f"/tmp/tiktok_signup_debug_{niche}.png")
+            if not phone_input:
+                # Dernier recours: chercher tout input visible
+                all_inputs = page.locator('input:visible')
+                count = await all_inputs.count()
+                print(f"  {count} inputs visibles trouves")
+                for i in range(count):
+                    inp = all_inputs.nth(i)
+                    placeholder = await inp.get_attribute("placeholder") or ""
+                    input_type = await inp.get_attribute("type") or ""
+                    name = await inp.get_attribute("name") or ""
+                    print(f"    input[{i}]: type={input_type} name={name} placeholder={placeholder}")
+                    if input_type == "tel" or "phone" in (placeholder + name).lower():
+                        phone_input = inp
+                        break
+
+            if not phone_input:
+                await page.screenshot(path=f"/tmp/tiktok_no_phone_{niche}.png")
                 await browser.close()
                 await sms_client.cancel_number(order_id)
-                return {"success": False, "error": f"Phone input failed: {e}"}
+                return {"success": False, "error": "Phone input introuvable. Screenshot saved."}
+
+            phone_local = phone.replace("+33", "0")
+            await phone_input.click()
+            await asyncio.sleep(0.5)
+            await _type_like_human(phone_input, phone_local)
+            await asyncio.sleep(1)
+            await page.screenshot(path="/tmp/tiktok_step4_phone.png")
 
             # 5. CAPTCHA (CapSolver)
             print("[ACCOUNT] CAPTCHA check...")
