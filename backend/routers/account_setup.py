@@ -1,7 +1,8 @@
 """Endpoints API pour la gestion des comptes TikTok."""
 
 import asyncio
-from fastapi import APIRouter, BackgroundTasks
+import traceback
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/tiktok/accounts", tags=["TikTok Accounts"])
@@ -16,26 +17,73 @@ class CreateAccountRequest(BaseModel):
 @router.post("/create")
 async def create_account(req: CreateAccountRequest, background_tasks: BackgroundTasks):
     """Cree un nouveau compte TikTok pour une niche."""
+    import os
+
+    # Validation upfront
+    fivesim_key = os.getenv("FIVESIM_API_KEY", "")
+    sadcaptcha_key = os.getenv("SADCAPTCHA_API_KEY", "")
+
+    missing = []
+    if not fivesim_key:
+        missing.append("FIVESIM_API_KEY")
+    if not sadcaptcha_key:
+        missing.append("SADCAPTCHA_API_KEY")
+
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Variables manquantes: {', '.join(missing)}. "
+            "Configurez-les dans Railway avant de creer un compte.",
+        )
 
     async def _create():
-        from backend.firebase import db
-        from backend.tiktok.account_creator import create_tiktok_account, setup_account_in_firebase
+        try:
+            from backend.firebase import db
+            from backend.tiktok.account_creator import (
+                create_tiktok_account,
+                setup_account_in_firebase,
+            )
 
-        result = await create_tiktok_account(
-            niche=req.niche,
-            proxy=req.proxy,
-            headless=req.headless,
-        )
-        if result["success"]:
-            await setup_account_in_firebase(result, db)
+            print(f"[ACCOUNT] Demarrage creation {req.niche}...")
+            result = await create_tiktok_account(
+                niche=req.niche,
+                proxy=req.proxy,
+                headless=req.headless,
+            )
+            if result["success"]:
+                await setup_account_in_firebase(result, db)
+                print(f"[ACCOUNT] {req.niche} cree avec succes: @{result.get('username')}")
+            else:
+                print(f"[ACCOUNT] ECHEC {req.niche}: {result.get('error')}")
+        except Exception as e:
+            print(f"[ACCOUNT] ERREUR {req.niche}: {e}")
+            traceback.print_exc()
 
-    background_tasks.add_task(asyncio.ensure_future, _create())
+    # Lancer en vrai background avec asyncio.create_task
+    asyncio.create_task(_create())
     return {"message": f"Creation compte {req.niche} demarree en arriere-plan"}
 
 
 @router.post("/create-all")
-async def create_all_accounts(background_tasks: BackgroundTasks):
+async def create_all_accounts():
     """Cree un compte pour chaque niche non configuree."""
+    import os
+
+    fivesim_key = os.getenv("FIVESIM_API_KEY", "")
+    sadcaptcha_key = os.getenv("SADCAPTCHA_API_KEY", "")
+
+    missing = []
+    if not fivesim_key:
+        missing.append("FIVESIM_API_KEY")
+    if not sadcaptcha_key:
+        missing.append("SADCAPTCHA_API_KEY")
+
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Variables manquantes: {', '.join(missing)}",
+        )
+
     from backend.tiktok.config import TIKTOK_NICHE_CONFIG
     from backend.firebase import db
 
@@ -46,20 +94,31 @@ async def create_all_accounts(background_tasks: BackgroundTasks):
             niches_sans_compte.append(niche)
 
     async def _create_all():
-        from backend.tiktok.account_creator import create_tiktok_account, setup_account_in_firebase
+        from backend.tiktok.account_creator import (
+            create_tiktok_account,
+            setup_account_in_firebase,
+        )
         from backend.firebase import db as firebase_db
 
         for niche in niches_sans_compte:
-            print(f"\nCreation compte {niche}...")
-            result = await create_tiktok_account(niche=niche, headless=True)
-            if result["success"]:
-                await setup_account_in_firebase(result, firebase_db)
-            else:
-                print(f"  ECHEC {niche}: {result['error']}")
+            try:
+                print(f"\n[ACCOUNT] Creation compte {niche}...")
+                result = await create_tiktok_account(niche=niche, headless=True)
+                if result["success"]:
+                    await setup_account_in_firebase(result, firebase_db)
+                    print(f"[ACCOUNT] {niche} OK: @{result.get('username')}")
+                else:
+                    print(f"[ACCOUNT] ECHEC {niche}: {result['error']}")
+            except Exception as e:
+                print(f"[ACCOUNT] ERREUR {niche}: {e}")
+                traceback.print_exc()
             await asyncio.sleep(60)
 
-    background_tasks.add_task(asyncio.ensure_future, _create_all())
-    return {"message": f"Creation de {len(niches_sans_compte)} comptes demarree", "niches": niches_sans_compte}
+    asyncio.create_task(_create_all())
+    return {
+        "message": f"Creation de {len(niches_sans_compte)} comptes demarree",
+        "niches": niches_sans_compte,
+    }
 
 
 @router.get("/status")
