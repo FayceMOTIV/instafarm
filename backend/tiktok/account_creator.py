@@ -762,30 +762,56 @@ async def _select_tiktok_country(page, phone_prefix: str, country_search: str):
 
         if search_input:
             await search_input.fill(country_search)
-            await asyncio.sleep(1)
+            await asyncio.sleep(1.5)
             print(f"  Searched: '{country_search}'")
         else:
             print("  No search input")
 
-        # 3. Cliquer le premier <li> visible (resultat filtre)
-        # Apres la recherche, les <li> visibles devraient contenir le pays
+        # 3. Debug : dump la structure du dropdown pour voir le format des options
+        dropdown_debug = await page.evaluate("""
+            () => {
+                // Trouver tous les elements contenant des noms de pays
+                const items = [];
+                // Chercher les li, div[role=option], ou tout element petit avec du texte pays
+                for (const tag of ['li', 'div[role="option"]', '[class*="Item"]', '[class*="item"]', '[class*="Option"]']) {
+                    document.querySelectorAll(tag).forEach(el => {
+                        const rect = el.getBoundingClientRect();
+                        const text = el.innerText || el.textContent || '';
+                        if (rect.height > 0 && rect.height < 80 && text.length > 2 && text.length < 100) {
+                            items.push({
+                                tag: el.tagName + (el.className ? '.' + el.className.toString().split(' ')[0] : ''),
+                                text: text.trim().slice(0, 50),
+                                h: Math.round(rect.height),
+                            });
+                        }
+                    });
+                }
+                return items.slice(0, 8);
+            }
+        """)
+        print(f"  [DROPDOWN] {dropdown_debug}")
+
+        # 4. Cliquer : chercher un element avec le texte EXACT court (nom pays + code)
         country_clicked = False
 
-        # D'abord via JS pour cliquer le premier <li> visible dans la liste
         clicked_text = await page.evaluate(f"""
             () => {{
-                // Chercher tous les <li> dans le dropdown
-                const items = document.querySelectorAll('li');
-                for (const li of items) {{
-                    const text = li.textContent || '';
-                    // Match sur le nom du pays OU le prefix
-                    if (text.includes('{country_search}') || text.includes('+{prefix_num}')) {{
-                        // Verifier que c'est visible
-                        const rect = li.getBoundingClientRect();
-                        if (rect.height > 0 && rect.width > 0) {{
-                            li.click();
-                            return text.trim().slice(0, 60);
-                        }}
+                // Chercher TOUS les elements visibles, pas juste li
+                const allEls = document.querySelectorAll('*');
+                for (const el of allEls) {{
+                    const text = (el.innerText || el.textContent || '').trim();
+                    const rect = el.getBoundingClientRect();
+                    // L'element doit :
+                    // - etre visible (height > 0)
+                    // - etre petit (un seul item, pas un container)
+                    // - contenir le nom du pays
+                    // - avoir un texte court (< 80 chars = un seul pays)
+                    if (rect.height > 10 && rect.height < 60 &&
+                        rect.width > 50 &&
+                        text.length < 80 && text.length > 3 &&
+                        text.includes('{country_search}')) {{
+                        el.click();
+                        return text.slice(0, 60);
                     }}
                 }}
                 return null;
@@ -794,18 +820,15 @@ async def _select_tiktok_country(page, phone_prefix: str, country_search: str):
 
         if clicked_text:
             country_clicked = True
-            print(f"  Country selected via JS: '{clicked_text}'")
+            print(f"  Country selected: '{clicked_text}'")
 
         if not country_clicked:
-            # Fallback Playwright : cliquer le premier li visible
-            try:
-                li = page.locator(f'li:has-text("{country_search}")').first
-                if await li.is_visible(timeout=2000):
-                    await li.click()
-                    country_clicked = True
-                    print(f"  Country selected via locator: {country_search}")
-            except Exception:
-                pass
+            # Fallback : keyboard navigation (arrow down + enter)
+            print(f"  Trying keyboard: down + enter")
+            await page.keyboard.press("ArrowDown")
+            await asyncio.sleep(0.3)
+            await page.keyboard.press("Enter")
+            country_clicked = True
 
         if not country_clicked:
             print(f"  WARN: Could not select {country_search}")
