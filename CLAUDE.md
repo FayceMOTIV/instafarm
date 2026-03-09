@@ -473,6 +473,9 @@ redis[asyncio]==5.1.0
 instagrapi==2.1.2
 playwright==1.47.0
 
+# TikTok account creation (bypass CDP detection)
+nodriver
+
 # IA
 groq==0.11.0
 scikit-learn==1.5.2           # TF-IDF
@@ -596,6 +599,10 @@ SESSION 5 — Anti-ban + Scheduler → [✅ DONE - 2026-03-05]
 SESSION 6 — API FastAPI          → [✅ DONE - 2026-03-05]
 SESSION 7 — PWA                 → [✅ DONE - 2026-03-05]
 SESSION 8 — Deploy Oracle        → [✅ DONE - 2026-03-05]
+SESSION 9 — TikTok Account Creator → [🔧 IN PROGRESS - 2026-03-08]
+  - nodriver intégré (bypass CDP)  → [✅ DONE]
+  - mail.tm email signup           → [✅ DONE]
+  - Test complet IP fraîche        → [⏳ TODO]
 ```
 
 **À mettre à jour après chaque session réussie avec ✅ + date.**
@@ -618,6 +625,12 @@ Zéro soumission App Store. Installable sur iPhone/Android. Mise à jour instant
 
 **Pourquoi asyncio.gather pour le scheduler ?**
 Toutes les niches tournent en VRAI parallèle. 10 niches = 10 tâches simultanées. Pas de queue séquentielle.
+
+**Pourquoi nodriver et pas Playwright pour TikTok ?**
+TikTok détecte la connexion CDP (Chrome DevTools Protocol) de Playwright, même avec Chrome réel + stealth plugins. nodriver patche Chrome pour masquer les traces CDP. Prouvé: code email reçu (338688) avec nodriver là où Playwright échouait systématiquement.
+
+**Pourquoi email et pas SMS pour TikTok ?**
+mail.tm = gratuit et illimité. SMS (GrizzlySMS, SMS-Man) = payant, solde faible, et TikTok bloque souvent les numéros virtuels. Email via mail.tm fonctionne parfaitement avec nodriver.
 
 ---
 

@@ -1,6 +1,7 @@
 """Creation automatisee de comptes TikTok.
 
-Stack : GrizzlySMS (OTP) + CapSolver (CAPTCHA) + playwright-stealth.
+Stack : mail.tm (email signup prioritaire) + SMS-Man/GrizzlySMS (fallback)
+        + CapSolver (CAPTCHA) + playwright-stealth enhanced.
 """
 
 import asyncio
@@ -14,6 +15,13 @@ from pathlib import Path
 
 import httpx
 from playwright.async_api import async_playwright
+
+try:
+    import nodriver as uc
+
+    HAS_NODRIVER = True
+except ImportError:
+    HAS_NODRIVER = False
 
 SMS_API_KEY = os.getenv("SMS_ACTIVATE_KEY", "")
 SMS_API_URL = os.getenv("SMS_API_URL", "https://api.grizzlysms.com/stubs/handler_api.php")
@@ -37,7 +45,185 @@ PLAYWRIGHT_ARGS = [
     "--disable-blink-features=AutomationControlled",
     "--disable-dev-shm-usage",
     "--disable-gpu",
+    "--disable-infobars",
+    "--window-size=390,844",
+    "--lang=fr-FR",
 ]
+
+# Use real Chrome instead of Chromium when available (much harder to detect)
+USE_REAL_CHROME = True
+
+
+# ──────────────────────────────────────────────────────────
+# mail.tm Client (temp email for signup — avoids SMS entirely)
+# ──────────────────────────────────────────────────────────
+
+class MailTMClient:
+    """Client API mail.tm pour email temporaire."""
+
+    BASE_URL = "https://api.mail.tm"
+
+    async def create_email(self) -> dict | None:
+        """Cree une adresse email temporaire. Retourne {email, password, token}."""
+        async with httpx.AsyncClient(timeout=15) as client:
+            # 1. Get available domain
+            r = await client.get(f"{self.BASE_URL}/domains")
+            if r.status_code != 200:
+                print(f"[MAILTM] Domains error: {r.status_code}")
+                return None
+
+            domains = r.json().get("hydra:member", [])
+            if not domains:
+                print("[MAILTM] No domains available")
+                return None
+
+            domain = domains[0]["domain"]
+            # Random username: 8-12 chars lowercase + digits
+            user = "".join(random.choices(string.ascii_lowercase + string.digits, k=random.randint(8, 12)))
+            email = f"{user}@{domain}"
+            pwd = "".join(random.choices(string.ascii_letters + string.digits, k=16))
+
+            # 2. Create account
+            r = await client.post(
+                f"{self.BASE_URL}/accounts",
+                json={"address": email, "password": pwd},
+            )
+            if r.status_code not in (200, 201):
+                print(f"[MAILTM] Account create error: {r.status_code} {r.text[:200]}")
+                return None
+
+            # 3. Get auth token
+            r = await client.post(
+                f"{self.BASE_URL}/token",
+                json={"address": email, "password": pwd},
+            )
+            if r.status_code != 200:
+                print(f"[MAILTM] Token error: {r.status_code}")
+                return None
+
+            token = r.json().get("token", "")
+            print(f"[MAILTM] Email cree: {email}")
+            return {"email": email, "password": pwd, "token": token}
+
+    async def wait_for_code(self, token: str, max_wait: int = 120) -> str | None:
+        """Attend le code de verification TikTok. Retourne le code 6 digits ou None."""
+        headers = {"Authorization": f"Bearer {token}"}
+        async with httpx.AsyncClient(timeout=15) as client:
+            for attempt in range(max_wait // 5):
+                await asyncio.sleep(5)
+                r = await client.get(f"{self.BASE_URL}/messages", headers=headers)
+                if r.status_code != 200:
+                    print(f"  [MAILTM] Messages error: {r.status_code}")
+                    continue
+
+                messages = r.json().get("hydra:member", [])
+                for msg in messages:
+                    subject = (msg.get("subject") or "").lower()
+                    # TikTok verification emails have subjects like "verification code" or "[TikTok]"
+                    if "tiktok" in subject or "verif" in subject or "code" in subject:
+                        # Get full message
+                        msg_id = msg["id"]
+                        r2 = await client.get(f"{self.BASE_URL}/messages/{msg_id}", headers=headers)
+                        if r2.status_code == 200:
+                            body = r2.json().get("text", "") or r2.json().get("html", [""])[0]
+                            # Extract 6-digit code
+                            code = re.search(r"\b(\d{6})\b", body)
+                            if code:
+                                return code.group(1)
+                            # Try 4-digit
+                            code = re.search(r"\b(\d{4})\b", body)
+                            if code:
+                                return code.group(1)
+                            print(f"  [MAILTM] Email found but no code in: {body[:200]}")
+                            return None
+
+                print(f"  [MAILTM] wait... ({attempt * 5}s/{max_wait}s) {len(messages)} msgs")
+
+        return None
+
+
+# ──────────────────────────────────────────────────────────
+# Enhanced Stealth (anti-detection TikTok)
+# ──────────────────────────────────────────────────────────
+
+STEALTH_JS = """
+() => {
+    // Override navigator.webdriver
+    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+
+    // Chrome runtime
+    window.chrome = { runtime: {}, loadTimes: function(){}, csi: function(){} };
+
+    // Permissions API
+    const origQuery = window.navigator.permissions.query;
+    window.navigator.permissions.query = (params) => (
+        params.name === 'notifications' ?
+            Promise.resolve({state: Notification.permission}) :
+            origQuery(params)
+    );
+
+    // Plugins (simulate real browser)
+    Object.defineProperty(navigator, 'plugins', {
+        get: () => [1, 2, 3, 4, 5],
+    });
+
+    // Languages
+    Object.defineProperty(navigator, 'languages', {
+        get: () => ['fr-FR', 'fr', 'en-US', 'en'],
+    });
+
+    // Hardware concurrency
+    Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 4});
+
+    // Device memory
+    Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
+
+    // WebGL vendor/renderer
+    const getParameter = WebGLRenderingContext.prototype.getParameter;
+    WebGLRenderingContext.prototype.getParameter = function(param) {
+        if (param === 37445) return 'Apple Inc.';
+        if (param === 37446) return 'Apple GPU';
+        return getParameter.call(this, param);
+    };
+
+    // Prevent iframe detection
+    Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+        get: function() { return window; }
+    });
+
+    // Connection type
+    if (navigator.connection) {
+        Object.defineProperty(navigator.connection, 'rtt', {get: () => 50});
+    }
+}
+"""
+
+
+async def _apply_enhanced_stealth(page):
+    """Applique stealth avancee en plus de playwright-stealth."""
+    try:
+        from playwright_stealth import stealth_async
+        await stealth_async(page)
+    except ImportError:
+        pass
+    await page.evaluate(STEALTH_JS)
+
+
+async def _human_scroll_and_move(page):
+    """Simule un comportement humain : scroll + mouvements souris."""
+    # Petit scroll down
+    await page.mouse.move(random.randint(150, 250), random.randint(300, 500))
+    await asyncio.sleep(random.uniform(0.3, 0.8))
+    await page.mouse.wheel(0, random.randint(50, 150))
+    await asyncio.sleep(random.uniform(0.5, 1.0))
+    # Mouvement souris naturel
+    for _ in range(random.randint(2, 4)):
+        await page.mouse.move(
+            random.randint(50, 350),
+            random.randint(100, 700),
+            steps=random.randint(5, 15),
+        )
+        await asyncio.sleep(random.uniform(0.2, 0.5))
 
 
 # ──────────────────────────────────────────────────────────
@@ -420,20 +606,37 @@ async def create_tiktok_account(
     save_cookies_path: str | None = None,
     headless: bool = True,
 ) -> dict:
-    """Cree un compte TikTok — SMS-Man UK puis Indonesie (fallback GrizzlySMS)."""
+    """Cree un compte TikTok — email (mail.tm) en priorite, SMS en fallback."""
 
-    # Phase 1 : SMS-Man via API SMS-activate (prioritaire, 25000 numeros UK dispo)
+    # ═══════════════════════════════════════════════════════
+    # Phase 1 : EMAIL SIGNUP (mail.tm — gratuit, pas de SMS)
+    # ═══════════════════════════════════════════════════════
+    print(f"\n[ACCOUNT] ═══ Phase 1: EMAIL SIGNUP pour {niche} ═══")
+    email_result = await _attempt_tiktok_email_signup(
+        niche=niche,
+        proxy=proxy,
+        save_cookies_path=save_cookies_path,
+        headless=headless,
+    )
+    if email_result["success"]:
+        return email_result
+
+    email_error = email_result.get("error", "unknown")
+    print(f"[ACCOUNT] Email signup echoue: {email_error}")
+
+    # ═══════════════════════════════════════════════════════
+    # Phase 2 : SMS-Man fallback (UK, Indonesia)
+    # ═══════════════════════════════════════════════════════
     if SMSMAN_API_KEY:
         smsman_url = "https://api.sms-man.com/stubs/handler_api.php"
         smsman_client = GrizzlySMSClient(SMSMAN_API_KEY, smsman_url)
         balance = await smsman_client.get_balance()
-        print(f"[ACCOUNT] SMS-Man balance: {balance} RUB")
+        print(f"\n[ACCOUNT] ═══ Phase 2: SMS-Man (balance: {balance} RUB) ═══")
 
         if balance >= 5:
-            last_error = ""
-            for country_cfg in COUNTRY_CONFIGS[:2]:  # UK, Indonesia
+            for country_cfg in COUNTRY_CONFIGS[:2]:
                 cname = country_cfg["name"]
-                print(f"\n[ACCOUNT] === SMS-Man 'lf' {cname} — pour {niche} ===")
+                print(f"\n[ACCOUNT] SMS-Man 'lf' {cname}...")
 
                 result = await _attempt_tiktok_signup(
                     niche=niche,
@@ -452,27 +655,22 @@ async def create_tiktok_account(
                 if result["success"]:
                     return result
 
-                last_error = result.get("error", "unknown")
-                print(f"[ACCOUNT] SMS-Man {cname} echoue: {last_error}")
-
                 wait = 10 + random.randint(0, 10)
                 print(f"[ACCOUNT] Attente {wait}s...")
                 await asyncio.sleep(wait)
 
-            return {"success": False, "error": f"SMS-Man echoue UK+ID. Dernier: {last_error}"}
-        else:
-            print(f"[ACCOUNT] SMS-Man balance trop faible ({balance})")
-
-    # Phase 2 : GrizzlySMS fallback
+    # ═══════════════════════════════════════════════════════
+    # Phase 3 : GrizzlySMS fallback
+    # ═══════════════════════════════════════════════════════
     if SMS_API_KEY:
         sms_client = GrizzlySMSClient(SMS_API_KEY, SMS_API_URL)
         balance = await sms_client.get_balance()
-        print(f"[ACCOUNT] GrizzlySMS fallback balance: {balance} RUB")
+        print(f"\n[ACCOUNT] ═══ Phase 3: GrizzlySMS (balance: {balance} RUB) ═══")
 
         if balance >= 5:
             for country_cfg in COUNTRY_CONFIGS[:2]:
                 cname = country_cfg["name"]
-                print(f"\n[ACCOUNT] === GrizzlySMS 'ds' {cname} — pour {niche} ===")
+                print(f"\n[ACCOUNT] GrizzlySMS 'ds' {cname}...")
                 result = await _attempt_tiktok_signup(
                     niche=niche,
                     sms_client=sms_client,
@@ -489,7 +687,10 @@ async def create_tiktok_account(
                 if result["success"]:
                     return result
 
-    return {"success": False, "error": "Tous les fournisseurs SMS ont echoue"}
+    return {
+        "success": False,
+        "error": f"Toutes methodes echouees. Email: {email_error}",
+    }
 
 
 async def _attempt_tiktok_signup(
@@ -558,14 +759,32 @@ async def _attempt_tiktok_signup(
         )
 
         page = await context.new_page()
+        await _apply_enhanced_stealth(page)
 
         try:
-            from playwright_stealth import stealth_async
-            await stealth_async(page)
-        except ImportError:
-            pass
+            # 0. Navigation naturelle homepage d'abord
+            print("[ACCOUNT] Navigation homepage...")
+            await page.goto("https://www.tiktok.com/", wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(random.uniform(2, 4))
+            await _human_scroll_and_move(page)
 
-        try:
+            # Accepter cookies sur la homepage
+            for consent_sel in [
+                'button:has-text("Accept all")',
+                'button:has-text("Accepter tout")',
+                'button:has-text("Accept")',
+                'button:has-text("Allow all")',
+                '[data-testid="cookie-banner-accept"]',
+            ]:
+                try:
+                    btn = page.locator(consent_sel).first
+                    if await btn.is_visible(timeout=1500):
+                        await btn.click()
+                        await asyncio.sleep(1)
+                        break
+                except Exception:
+                    continue
+
             # 1. Page inscription
             print("[ACCOUNT] Navigation signup...")
             await page.goto(
@@ -574,25 +793,22 @@ async def _attempt_tiktok_signup(
                 timeout=30000,
             )
             await asyncio.sleep(random.uniform(2, 4))
+            await _human_scroll_and_move(page)
             await page.screenshot(path="/tmp/tiktok_step1_loaded.png")
             print(f"  Step 1 URL: {page.url}")
 
-            # 2. Accepter cookies/consent + supprimer overlays
+            # 2. Supprimer overlays restants
             for consent_sel in [
                 'button:has-text("Accept all")',
                 'button:has-text("Accepter tout")',
-                'button:has-text("Accepter")',
-                'button:has-text("Allow all")',
-                'button:has-text("Allow")',
-                '[data-testid="cookie-banner-accept"]',
                 'button:has-text("Accept")',
+                'button:has-text("Allow")',
             ]:
                 try:
                     btn = page.locator(consent_sel).first
-                    if await btn.is_visible(timeout=1500):
+                    if await btn.is_visible(timeout=1000):
                         await btn.click()
-                        await asyncio.sleep(1)
-                        print(f"  Consent clique: {consent_sel}")
+                        await asyncio.sleep(0.5)
                         break
                 except Exception:
                     continue
@@ -875,6 +1091,361 @@ async def _attempt_tiktok_signup(
             return {"success": False, "error": str(e)}
 
 
+# ──────────────────────────────────────────────────────────
+# Email-based TikTok Signup — nodriver (bypass CDP detection)
+# ──────────────────────────────────────────────────────────
+
+MONTHS_FR = [
+    "Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
+    "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre",
+]
+
+
+async def _dismiss_tiktok_popups(tab):
+    """Dismiss cookie banner + GDPR popups via nodriver."""
+    for text in ["Tout autoriser", "J'ai compris", "Accept all", "Allow all"]:
+        try:
+            btn = await tab.find(text, best_match=True)
+            if btn:
+                await btn.click()
+                print(f"  Popup dismissed: '{text}'")
+                await asyncio.sleep(1)
+        except Exception:
+            continue
+
+
+async def _save_cookies_nodriver(tab, output_path: str):
+    """Save cookies from nodriver tab in Netscape format (includes httpOnly)."""
+    try:
+        cookies_data = await tab.evaluate(
+            """(() => {
+                // document.cookie misses httpOnly — but it's what we can get from JS
+                return document.cookie;
+            })()"""
+        )
+    except Exception:
+        cookies_data = ""
+
+    # Also try CDP for full cookie list
+    cdp_cookies = []
+    try:
+        import nodriver.cdp.network as net
+
+        cdp_cookies = await tab.send(net.get_all_cookies())
+    except Exception:
+        pass
+
+    with open(output_path, "w") as f:
+        f.write("# Netscape HTTP Cookie File\n# Generated by InstaFarm (nodriver)\n\n")
+
+        if cdp_cookies:
+            for c in cdp_cookies:
+                domain = c.domain if hasattr(c, "domain") else ".tiktok.com"
+                if not domain.startswith("."):
+                    domain = "." + domain
+                name = c.name if hasattr(c, "name") else ""
+                value = c.value if hasattr(c, "value") else ""
+                path = c.path if hasattr(c, "path") else "/"
+                secure = "TRUE" if (hasattr(c, "secure") and c.secure) else "FALSE"
+                expires = str(int(c.expires)) if (hasattr(c, "expires") and c.expires) else "0"
+                sub = "TRUE" if domain.startswith(".") else "FALSE"
+                f.write(f"{domain}\t{sub}\t{path}\t{secure}\t{expires}\t{name}\t{value}\n")
+        else:
+            # Fallback: parse document.cookie
+            for pair in (cookies_data or "").split(";"):
+                pair = pair.strip()
+                if "=" in pair:
+                    name, value = pair.split("=", 1)
+                    f.write(f".tiktok.com\tTRUE\t/\tTRUE\t0\t{name.strip()}\t{value.strip()}\n")
+
+    print(f"  Cookies saved: {len(cdp_cookies) or 'JS-only'} entries")
+
+
+async def _attempt_tiktok_email_signup(
+    niche: str,
+    proxy: str | None = None,
+    save_cookies_path: str | None = None,
+    headless: bool = True,
+) -> dict:
+    """Cree un compte TikTok via email (mail.tm) + nodriver (bypass CDP detection).
+
+    Playwright est TOUJOURS detecte par TikTok (CDP fingerprint).
+    nodriver patche Chrome pour masquer les traces CDP.
+
+    Flow TikTok email (FR) — page unique :
+      1. Birthday (combobox custom React) via JS clicks
+      2. Email input
+      3. Password input
+      4. "Envoyer le code" → mail.tm recoit le code
+      5. Code input
+      6. "Suivant" → compte cree
+    """
+    if not HAS_NODRIVER:
+        return {"success": False, "error": "nodriver required. pip install nodriver"}
+
+    username_base = random.choice(NICHE_USERNAMES.get(niche, ["ProFrance"]))
+    username = f"{username_base}{random.randint(10, 99)}"
+    password = _generate_password()
+
+    # 1. Email temporaire
+    mail_client = MailTMClient()
+    email_info = await mail_client.create_email()
+    if not email_info:
+        return {"success": False, "error": "Echec creation email temporaire (mail.tm)"}
+
+    email = email_info["email"]
+    email_token = email_info["token"]
+    print(f"[ACCOUNT-EMAIL] Email: {email} | Niche: {niche}")
+
+    if not save_cookies_path:
+        cookies_dir = Path("/tmp/tiktok_cookies")
+        cookies_dir.mkdir(parents=True, exist_ok=True)
+        save_cookies_path = str(cookies_dir / f"{niche}_{username}.txt")
+
+    # 2. Chrome via nodriver
+    browser_args = ["--lang=fr-FR", "--window-size=1280,900"]
+    if proxy:
+        browser_args.append(f"--proxy-server={proxy}")
+
+    browser = None
+    tab = None
+    try:
+        browser = await uc.start(headless=headless, browser_args=browser_args)
+        print("[ACCOUNT-EMAIL] nodriver Chrome started")
+
+        # 3. Navigate
+        tab = await browser.get("https://www.tiktok.com/signup/phone-or-email/email")
+        await asyncio.sleep(random.uniform(4, 7))
+
+        # 4. Dismiss popups
+        await _dismiss_tiktok_popups(tab)
+        await asyncio.sleep(random.uniform(1, 2))
+
+        # 5. Birthday — custom React combobox (NOT native <select>)
+        # IDs: #Month-options-item-{idx}, #Day-options-item-{idx}, #Year-options-item-{idx}
+        month_idx = random.randint(0, 11)
+        day = random.randint(1, 28)
+        year = random.randint(1985, 1998)
+        month_name = MONTHS_FR[month_idx]
+
+        birthday_js = """
+        (async () => {
+            function clickOption(prefix, text) {
+                const opts = document.querySelectorAll('[id^="' + prefix + '-options-item-"]');
+                for (const opt of opts) {
+                    if (opt.textContent.trim() === text) {
+                        opt.click();
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            // Month
+            const monthBox = document.querySelector('[aria-label*="Mois"]');
+            if (!monthBox) return 'no_month_box';
+            monthBox.click();
+            await new Promise(r => setTimeout(r, 800));
+            const mOk = clickOption('Month', '""" + month_name + """');
+            await new Promise(r => setTimeout(r, 500));
+
+            // Day
+            const dayBox = document.querySelector('[aria-label*="Jour"]');
+            if (!dayBox) return 'no_day_box';
+            dayBox.click();
+            await new Promise(r => setTimeout(r, 800));
+            const dOk = clickOption('Day', '""" + str(day) + """');
+            await new Promise(r => setTimeout(r, 500));
+
+            // Year
+            const yearBox = document.querySelector('[aria-label*="Ann"]');
+            if (!yearBox) return 'no_year_box';
+            yearBox.click();
+            await new Promise(r => setTimeout(r, 800));
+            const yOk = clickOption('Year', '""" + str(year) + """');
+            await new Promise(r => setTimeout(r, 500));
+
+            return 'M=' + mOk + ' D=' + dOk + ' Y=' + yOk;
+        })()
+        """
+
+        print(f"[ACCOUNT-EMAIL] Birthday: {month_name} {day} {year}")
+        bday_result = await tab.evaluate(birthday_js)
+        print(f"  Birthday result: {bday_result}")
+        await asyncio.sleep(random.uniform(1.5, 2.5))
+
+        # Re-dismiss any popup that appeared after combobox interaction
+        await _dismiss_tiktok_popups(tab)
+
+        # 6. Type email
+        print(f"[ACCOUNT-EMAIL] Typing email: {email}")
+        email_el = None
+        for sel in ['input[name="email"]', 'input[type="email"]', 'input[placeholder*="email" i]']:
+            try:
+                email_el = await tab.select(sel)
+                if email_el:
+                    break
+            except Exception:
+                continue
+
+        if not email_el:
+            await tab.save_screenshot(f"/tmp/tiktok_nd_no_email_{niche}.png")
+            browser.stop()
+            return {"success": False, "error": "Email input introuvable (nodriver)"}
+
+        await email_el.click()
+        await asyncio.sleep(0.4)
+        await email_el.send_keys(email)
+        print(f"  Email typed")
+        await asyncio.sleep(random.uniform(1, 2))
+
+        # 7. Type password
+        print("[ACCOUNT-EMAIL] Typing password...")
+        pwd_el = None
+        for sel in ['input[type="password"]', 'input[name="password"]']:
+            try:
+                pwd_el = await tab.select(sel)
+                if pwd_el:
+                    break
+            except Exception:
+                continue
+
+        if pwd_el:
+            await pwd_el.click()
+            await asyncio.sleep(0.3)
+            await pwd_el.send_keys(password)
+            print(f"  Password typed")
+            await asyncio.sleep(random.uniform(1, 2))
+
+        # 8. Click "Envoyer le code"
+        print("[ACCOUNT-EMAIL] Clicking 'Envoyer le code'...")
+        send_btn = None
+        for text in ["Envoyer le code", "Send code", "Envoyer"]:
+            try:
+                send_btn = await tab.find(text, best_match=True)
+                if send_btn:
+                    break
+            except Exception:
+                continue
+
+        if send_btn:
+            await send_btn.click()
+            print("  'Envoyer le code' clicked")
+        else:
+            print("  [WARN] Send code button not found")
+
+        await asyncio.sleep(random.uniform(3, 5))
+
+        # 8b. Check rate limit
+        page_text = await tab.evaluate("document.body.innerText.slice(0, 3000)") or ""
+        for kw in ["trop de tentatives", "réessayez plus tard", "too many attempts", "try again later"]:
+            if kw.lower() in page_text.lower():
+                print(f"  [BLOCKED] '{kw}'")
+                await tab.save_screenshot(f"/tmp/tiktok_nd_blocked_{niche}.png")
+                browser.stop()
+                return {"success": False, "error": f"TikTok rate limit: {kw}"}
+
+        # 9. Wait for email code
+        print("[ACCOUNT-EMAIL] Waiting for email code...")
+        otp_code = await mail_client.wait_for_code(email_token, max_wait=120)
+        if not otp_code:
+            await tab.save_screenshot(f"/tmp/tiktok_nd_no_code_{niche}.png")
+            browser.stop()
+            return {"success": False, "error": "Timeout email code (120s)"}
+
+        print(f"  Code recu: {otp_code}")
+
+        # 10. Type code
+        code_el = None
+        for sel in ['input[placeholder*="code" i]', 'input[name="code"]', '[data-e2e="signup-code-input"]']:
+            try:
+                code_el = await tab.select(sel)
+                if code_el:
+                    break
+            except Exception:
+                continue
+
+        if not code_el:
+            # Fallback: find all text inputs and pick the one near "code"
+            try:
+                code_el = await tab.select('input[type="text"]')
+            except Exception:
+                pass
+
+        if code_el:
+            await code_el.click()
+            await asyncio.sleep(0.3)
+            await code_el.send_keys(otp_code)
+            print(f"  Code typed: {otp_code}")
+        else:
+            print("  [WARN] Code input not found")
+            browser.stop()
+            return {"success": False, "error": "Code input introuvable"}
+
+        await asyncio.sleep(random.uniform(1.5, 2.5))
+
+        # 11. Click "Suivant" (final submit)
+        print("[ACCOUNT-EMAIL] Submitting...")
+        submit_btn = None
+        for text in ["Suivant", "Next", "S'inscrire", "Sign up"]:
+            try:
+                submit_btn = await tab.find(text, best_match=True)
+                if submit_btn:
+                    break
+            except Exception:
+                continue
+
+        if submit_btn:
+            await submit_btn.click()
+            print("  Submit clicked")
+
+        await asyncio.sleep(random.uniform(6, 10))
+
+        # 12. Check success
+        current_url = await tab.evaluate("window.location.href") or ""
+        is_logged_in = (
+            "/foryou" in current_url
+            or "/following" in current_url
+            or "tiktok.com/home" in current_url
+            or ("/signup" not in current_url and "tiktok.com" in current_url)
+        )
+
+        if not is_logged_in:
+            page_text2 = await tab.evaluate("document.body.innerText.slice(0, 2000)") or ""
+            await tab.save_screenshot(f"/tmp/tiktok_nd_failed_{niche}.png")
+            browser.stop()
+            return {"success": False, "error": f"Signup failed, url: {current_url}, page: {page_text2[:200]}"}
+
+        print(f"  Inscription reussie! URL: {current_url}")
+
+        # 13. Save cookies
+        await _save_cookies_nodriver(tab, save_cookies_path)
+        browser.stop()
+
+        return {
+            "success": True,
+            "username": username,
+            "email": email,
+            "password": password,
+            "cookies_path": save_cookies_path,
+            "niche": niche,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    except Exception as e:
+        try:
+            if tab:
+                await tab.save_screenshot(f"/tmp/tiktok_nd_error_{niche}.png")
+        except Exception:
+            pass
+        if browser:
+            try:
+                browser.stop()
+            except Exception:
+                pass
+        return {"success": False, "error": str(e)}
+
+
 async def _select_tiktok_country(page, phone_prefix: str, country_search: str):
     """Selectionne le pays dans le dropdown code pays TikTok.
 
@@ -1009,6 +1580,38 @@ async def _select_tiktok_country(page, phone_prefix: str, country_search: str):
         print(f"  Country selection error: {e}")
 
 
+async def _close_cookie_banner(page):
+    """Ferme le cookie banner TikTok (FR: 'Tout autoriser', EN: 'Accept all')."""
+    for sel in [
+        'button:has-text("Tout autoriser")',
+        'button:has-text("Accept all")',
+        'button:has-text("Accepter tout")',
+        'button:has-text("Allow all")',
+        'button:has-text("Accept")',
+        '[data-testid="cookie-banner-accept"]',
+    ]:
+        try:
+            btn = page.locator(sel).first
+            if await btn.is_visible(timeout=2000):
+                await btn.click()
+                print(f"  Cookie banner closed: {sel}")
+                await asyncio.sleep(1)
+                return True
+        except Exception:
+            continue
+
+    # Fallback: JS remove
+    await page.evaluate("""
+        () => {
+            const banners = document.querySelectorAll('[class*="cookie"], [class*="consent"], [id*="cookie"], [id*="consent"]');
+            banners.forEach(el => {
+                if (el.getBoundingClientRect().height > 50) el.remove();
+            });
+        }
+    """)
+    return False
+
+
 async def _remove_overlays(page):
     """Supprime les popups/overlays qui bloquent les clics."""
     await page.evaluate("""
@@ -1056,14 +1659,18 @@ def _generate_password() -> str:
 
 async def setup_account_in_firebase(account_data: dict, db) -> bool:
     niche = account_data["niche"]
-    db.collection("tiktok_accounts").document(niche).update({
+    update_data = {
         "username": account_data["username"],
-        "phone": account_data["phone"],
         "cookies_path": account_data["cookies_path"],
         "status": "warmup",
         "warmup_day": 0,
         "warmup_started_at": datetime.now(timezone.utc),
         "created_at": datetime.now(timezone.utc),
-    })
+    }
+    if account_data.get("phone"):
+        update_data["phone"] = account_data["phone"]
+    if account_data.get("email"):
+        update_data["email"] = account_data["email"]
+    db.collection("tiktok_accounts").document(niche).update(update_data)
     print(f"[ACCOUNT] {niche} enregistre en Firebase — status: warmup")
     return True

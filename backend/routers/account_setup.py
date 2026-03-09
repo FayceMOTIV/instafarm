@@ -19,22 +19,13 @@ async def create_account(req: CreateAccountRequest, background_tasks: Background
     """Cree un nouveau compte TikTok pour une niche."""
     import os
 
-    # Validation upfront — au moins un fournisseur SMS doit etre configure
-    sms_key = os.getenv("SMS_ACTIVATE_KEY", "")
-    smsman_key = os.getenv("SMSMAN_API_KEY", "")
+    # Validation upfront — email signup fonctionne sans clé SMS
+    # mais CAPSOLVER_KEY reste nécessaire pour les captchas
     capsolver_key = os.getenv("CAPSOLVER_KEY", "")
-
-    missing = []
-    if not sms_key and not smsman_key:
-        missing.append("SMSMAN_API_KEY ou SMS_ACTIVATE_KEY")
     if not capsolver_key:
-        missing.append("CAPSOLVER_KEY")
-
-    if missing:
         raise HTTPException(
             status_code=400,
-            detail=f"Variables manquantes: {', '.join(missing)}. "
-            "Configurez-les dans Railway avant de creer un compte.",
+            detail="CAPSOLVER_KEY manquante. Configurez-la avant de creer un compte.",
         )
 
     async def _create():
@@ -70,19 +61,11 @@ async def create_all_accounts():
     """Cree un compte pour chaque niche non configuree."""
     import os
 
-    sms_key = os.getenv("SMS_ACTIVATE_KEY", "")
     capsolver_key = os.getenv("CAPSOLVER_KEY", "")
-
-    missing = []
-    if not sms_key:
-        missing.append("SMS_ACTIVATE_KEY")
     if not capsolver_key:
-        missing.append("CAPSOLVER_KEY")
-
-    if missing:
         raise HTTPException(
             status_code=400,
-            detail=f"Variables manquantes: {', '.join(missing)}",
+            detail="CAPSOLVER_KEY manquante.",
         )
 
     from backend.tiktok.config import TIKTOK_NICHE_CONFIG
